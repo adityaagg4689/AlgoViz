@@ -134,7 +134,7 @@ AlgoViz/
 │   │   ├── QueuePage/          # Queue visualizations
 │   │   ├── TreePage/           # Tree visualizations
 │   │   ├── GraphPage/          # Graph visualizations
-│   │   ├── SortingPage/        # Sorting algorithms
+│   │   ├── ArrayPage/        # Array algorithms
 │   │   └── HomePage/           # Landing page
 │   ├── utils/                  # Utility functions
 │   │   ├── algorithms/         # Algorithm implementations
