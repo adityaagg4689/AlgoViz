@@ -6,7 +6,7 @@ AlgoViz is an interactive web-based educational platform that visualizes fundame
 
 ## ✨ Live Demo
 
-🌐 **Live Site**: [https://algoviz-eta.vercel.app](https://algoviz-eta.vercel.app)
+🌐 **Live Site**: [AlgoViz](https://main.d3kx4fm5ys34yo.amplifyapp.com/)
 
 ## 🎯 Features
 
