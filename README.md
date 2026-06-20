@@ -64,7 +64,7 @@ AlgoViz is an interactive web-based educational platform that visualizes fundame
 ## 🛠️ Technology Stack
 
 ### **Frontend**
-- ⚛️ React 18 with TypeScript
+- ⚛️ React 18 with JavaScript
 - 🎨 Tailwind CSS for styling
 - 🌀 Framer Motion for animations
 - 📊 Chart.js for data visualization
@@ -145,8 +145,7 @@ AlgoViz/
 │   ├── assets/                 # Images, icons, etc.
 │   └── App.tsx                 # Root component
 ├── package.json
-├── vite.config.ts
-├── tsconfig.json
+├── vite.config.js
 └── README.md
 ```
 
@@ -243,10 +242,6 @@ Found a bug or have a feature request? Please:
 3. Include steps to reproduce (for bugs)
 4. Add screenshots if applicable
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 ## 👥 Authors
 
 - **Aditya Aggarwal** - *Project Lead & Developer*
@@ -254,28 +249,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - Inspired by various algorithm visualization tools
-
-## 📊 Project Status
-
-🚧 **Active Development** - New features and improvements are regularly added.
-
-## 🔮 Future Plans
-
-### **Planned Features**
-- [ ] More sorting algorithms (Heap Sort, Radix Sort)
-- [ ] Dynamic programming visualizations
-- [ ] Hash table operations
-- [ ] Advanced graph algorithms
-- [ ] Complexity analysis charts
-- [ ] Code editor integration
-- [ ] Multi-language support
-- [ ] User accounts and progress tracking
-
-### **Performance Improvements**
-- [ ] Web Workers for heavy computations
-- [ ] Canvas-based rendering
-- [ ] Lazy loading for components
-- [ ] Better mobile optimization
 
 ---
 
