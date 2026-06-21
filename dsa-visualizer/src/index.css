@@ -5,3 +5,22 @@
 .btn {
   @apply bg-indigo-600 text-white px-4 py-2 rounded;
 }
+:root {
+  --bg: #f8fafc;
+  --text: #0f172a;
+  --card-bg: #ffffff;
+  --border: rgba(0,0,0,0.08);
+}
+
+html.dark {
+  --bg: #080B14;
+  --text: #ffffff;
+  --card-bg: rgba(255,255,255,0.05);
+  --border: rgba(255,255,255,0.08);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  transition: background 0.3s, color 0.3s;
+}

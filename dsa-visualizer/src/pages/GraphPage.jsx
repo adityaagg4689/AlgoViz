@@ -2,9 +2,9 @@
 import { useState, useEffect, useRef } from "react";
 import NavBar from "../components/NavBar";
 
-// Maze generation with weights
+// ─── Maze generation with weights ──────────────────────────────
 const generateMaze = (rows, cols, startRow, startCol, isWeighted = false) => {
-  const maze = Array(rows).fill().map((_, rowIdx) => 
+  const maze = Array(rows).fill().map((_, rowIdx) =>
     Array(cols).fill().map((_, colIdx) => ({
       row: rowIdx,
       col: colIdx,
@@ -13,7 +13,7 @@ const generateMaze = (rows, cols, startRow, startCol, isWeighted = false) => {
       distance: Infinity
     }))
   );
-  
+
   // Directions: up, right, down, left
   const directions = [
     { dr: -2, dc: 0 },
@@ -21,22 +21,22 @@ const generateMaze = (rows, cols, startRow, startCol, isWeighted = false) => {
     { dr: 2, dc: 0 },
     { dr: 0, dc: -2 }
   ];
-  
+
   const stack = [{ r: startRow, c: startCol }];
   maze[startRow][startCol].isWall = false;
-  
+
   while (stack.length > 0) {
     const current = stack[stack.length - 1];
     const { r, c } = current;
-    
+
     // Shuffle directions
     const shuffledDirs = [...directions].sort(() => Math.random() - 0.5);
     let found = false;
-    
+
     for (const dir of shuffledDirs) {
       const nr = r + dir.dr;
       const nc = c + dir.dc;
-      
+
       if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && maze[nr][nc].isWall) {
         // Carve path
         maze[r + dir.dr/2][c + dir.dc/2].isWall = false;
@@ -46,12 +46,12 @@ const generateMaze = (rows, cols, startRow, startCol, isWeighted = false) => {
         break;
       }
     }
-    
+
     if (!found) {
       stack.pop();
     }
   }
-  
+
   // Add weights if weighted mode
   if (isWeighted) {
     for (let row = 0; row < rows; row++) {
@@ -62,36 +62,36 @@ const generateMaze = (rows, cols, startRow, startCol, isWeighted = false) => {
       }
     }
   }
-  
+
   // Create entrance and exit
   maze[startRow][startCol].isStart = true;
-  
+
   // Find furthest point from start for exit
   let exitRow = startRow;
   let exitCol = startCol;
   let maxDist = 0;
-  
+
   // Simple BFS to find furthest point
   const visited = Array(rows).fill().map(() => Array(cols).fill(false));
   const queue = [{ r: startRow, c: startCol, dist: 0 }];
   visited[startRow][startCol] = true;
-  
+
   while (queue.length > 0) {
     const { r, c, dist } = queue.shift();
-    
+
     if (dist > maxDist && !maze[r][c].isWall) {
       maxDist = dist;
       exitRow = r;
       exitCol = c;
     }
-    
+
     const neighbors = [
       { r: r-1, c },
       { r: r+1, c },
       { r, c: c-1 },
       { r, c: c+1 }
     ];
-    
+
     for (const neighbor of neighbors) {
       if (
         neighbor.r >= 0 && neighbor.r < rows &&
@@ -104,10 +104,19 @@ const generateMaze = (rows, cols, startRow, startCol, isWeighted = false) => {
       }
     }
   }
-  
+
   maze[exitRow][exitCol].isEnd = true;
-  
+
   return { maze, start: { row: startRow, col: startCol }, end: { row: exitRow, col: exitCol } };
+};
+
+// BUG FIX: nearest ODD center coordinate. The carving algorithm steps in
+// strides of 2, so an even start row/col offsets the whole reachable set
+// from the grid's wall lattice and can produce a maze that looks solid.
+// Keeps the "mouse starts near the middle" feel from the original design.
+const oddCenter = (size) => {
+  const c = Math.floor(size / 2);
+  return c % 2 === 1 ? c : c - 1;
 };
 
 // DFS Algorithm for maze solving
@@ -119,19 +128,19 @@ const dfs = (grid, start, end) => {
   const stack = [start];
   const visitedNodesInOrder = [];
   const path = [];
-  
+
   while (stack.length > 0) {
     const current = stack.pop();
-    
+
     if (visited[current.row][current.col]) continue;
-    
+
     visited[current.row][current.col] = true;
     visitedNodesInOrder.push({row: current.row, col: current.col});
-    
+
     if (current.row === end.row && current.col === end.col) {
       break;
     }
-    
+
     // Try directions in this order: right, down, up, left
     const neighbors = [
       {row: current.row, col: current.col + 1},
@@ -139,28 +148,33 @@ const dfs = (grid, start, end) => {
       {row: current.row - 1, col: current.col},
       {row: current.row, col: current.col - 1},
     ];
-    
+
     // Filter valid neighbors
-    const validNeighbors = neighbors.filter(neighbor => 
+    const validNeighbors = neighbors.filter(neighbor =>
       neighbor.row >= 0 && neighbor.row < rows &&
       neighbor.col >= 0 && neighbor.col < cols &&
       !grid[neighbor.row][neighbor.col].isWall &&
       !visited[neighbor.row][neighbor.col]
     );
-    
+
     // Sort neighbors based on distance to exit (heuristic)
     validNeighbors.sort((a, b) => {
       const distA = Math.abs(a.row - end.row) + Math.abs(a.col - end.col);
       const distB = Math.abs(b.row - end.row) + Math.abs(b.col - end.col);
       return distA - distB;
     });
-    
+
     for (const neighbor of validNeighbors) {
-      prev[neighbor.row][neighbor.col] = {row: current.row, col: current.col};
+      // BUG FIX: only record prev the first time a node is reached. Letting
+      // later iterations overwrite it could point the reconstructed path
+      // through a node that was never actually visited along that route.
+      if (prev[neighbor.row][neighbor.col] === null) {
+        prev[neighbor.row][neighbor.col] = {row: current.row, col: current.col};
+      }
       stack.push(neighbor);
     }
   }
-  
+
   // Reconstruct path
   let current = end;
   while (current && (current.row !== start.row || current.col !== start.col)) {
@@ -170,7 +184,7 @@ const dfs = (grid, start, end) => {
   if (path.length > 0) {
     path.unshift(start);
   }
-  
+
   return { visitedNodesInOrder, path };
 };
 
@@ -183,24 +197,24 @@ const bfs = (grid, start, end) => {
   const queue = [start];
   const visitedNodesInOrder = [];
   const path = [];
-  
+
   visited[start.row][start.col] = true;
-  
+
   while (queue.length > 0) {
     const current = queue.shift();
     visitedNodesInOrder.push({row: current.row, col: current.col});
-    
+
     if (current.row === end.row && current.col === end.col) {
       break;
     }
-    
+
     const neighbors = [
       {row: current.row - 1, col: current.col},
       {row: current.row + 1, col: current.col},
       {row: current.row, col: current.col - 1},
       {row: current.row, col: current.col + 1},
     ];
-    
+
     for (const neighbor of neighbors) {
       if (
         neighbor.row >= 0 && neighbor.row < rows &&
@@ -214,7 +228,7 @@ const bfs = (grid, start, end) => {
       }
     }
   }
-  
+
   // Reconstruct path
   let current = end;
   while (current && (current.row !== start.row || current.col !== start.col)) {
@@ -222,7 +236,7 @@ const bfs = (grid, start, end) => {
     current = prev[current.row][current.col];
   }
   if (path.length > 0) path.unshift(start);
-  
+
   return { visitedNodesInOrder, path };
 };
 
@@ -235,28 +249,28 @@ const dijkstra = (grid, start, end) => {
   const prev = Array(rows).fill().map(() => Array(cols).fill(null));
   const visitedNodesInOrder = [];
   const path = [];
-  
+
   distances[start.row][start.col] = 0;
   const unvisited = [{...start, distance: 0}];
-  
+
   while (unvisited.length > 0) {
     unvisited.sort((a, b) => a.distance - b.distance);
     const current = unvisited.shift();
-    
+
     if (visited[current.row][current.col]) continue;
-    
+
     visited[current.row][current.col] = true;
     visitedNodesInOrder.push({row: current.row, col: current.col});
-    
+
     if (current.row === end.row && current.col === end.col) break;
-    
+
     const neighbors = [
       {row: current.row - 1, col: current.col},
       {row: current.row + 1, col: current.col},
       {row: current.row, col: current.col - 1},
       {row: current.row, col: current.col + 1},
     ];
-    
+
     for (const neighbor of neighbors) {
       if (
         neighbor.row >= 0 && neighbor.row < rows &&
@@ -265,9 +279,9 @@ const dijkstra = (grid, start, end) => {
         !visited[neighbor.row][neighbor.col]
       ) {
         // KEY: Use the cell's weight, not just +1
-        const newDist = distances[current.row][current.col] + 
+        const newDist = distances[current.row][current.col] +
                        grid[neighbor.row][neighbor.col].weight;
-        
+
         if (newDist < distances[neighbor.row][neighbor.col]) {
           distances[neighbor.row][neighbor.col] = newDist;
           prev[neighbor.row][neighbor.col] = {row: current.row, col: current.col};
@@ -276,7 +290,7 @@ const dijkstra = (grid, start, end) => {
       }
     }
   }
-  
+
   // Reconstruct path
   let current = end;
   while (current && (current.row !== start.row || current.col !== start.col)) {
@@ -284,22 +298,28 @@ const dijkstra = (grid, start, end) => {
     current = prev[current.row][current.col];
   }
   if (path.length > 0) path.unshift(start);
-  
-  return { visitedNodesInOrder, path, distances };
+
+  // BUG FIX: read the total cost straight off the distances table instead of
+  // accumulating it cell-by-cell during the path animation. The animation
+  // loop runs on a timer, so accumulating there was prone to race conditions
+  // and off-by-one errors if the user navigated away mid-animation.
+  const totalCost = path.length > 0 ? distances[end.row][end.col] : 0;
+
+  return { visitedNodesInOrder, path, distances, totalCost };
 };
 
 // Grid Cell Component with weight display
-const GridCell = ({ 
-  cell, 
-  isStart, 
-  isEnd, 
-  isWall, 
-  isVisited, 
+const GridCell = ({
+  cell,
+  isStart,
+  isEnd,
+  isWall,
+  isVisited,
   isPath,
   isCurrent,
   distance,
   weight,
-  onClick 
+  onClick
 }) => {
   return (
     <div
@@ -327,7 +347,7 @@ const GridCell = ({
           {weight}
         </div>
       )}
-      
+
       {/* Show distance for Dijkstra's */}
       {distance !== Infinity && distance !== 0 && (
         <span className="text-xs font-bold text-gray-700">
@@ -387,7 +407,7 @@ const AlgorithmComparison = ({ isWeighted }) => (
         </tbody>
       </table>
     </div>
-    
+
     <div className="mt-6 p-4 bg-gradient-to-r from-amber-50 to-yellow-50 border border-amber-200 rounded-lg">
       <h4 className="font-bold text-amber-800 mb-2 flex items-center gap-2">
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
@@ -418,11 +438,13 @@ const AlgorithmComparison = ({ isWeighted }) => (
   </div>
 );
 
+// Speeds for the animation loop (ms per step)
+const SPEEDS = { Slow: 60, Normal: 20, Fast: 4 };
+
 export default function GraphPage() {
   const ROWS = 19; // Odd number for better maze generation
   const COLS = 29; // Odd number for better maze generation
-  const SPEED = 20;
-  
+
   const [grid, setGrid] = useState([]);
   const [isVisualizing, setIsVisualizing] = useState(false);
   const [algorithm, setAlgorithm] = useState("dijkstra");
@@ -434,37 +456,46 @@ export default function GraphPage() {
   const [endPos, setEndPos] = useState(null);
   const [isWeighted, setIsWeighted] = useState(true);
   const [totalCost, setTotalCost] = useState(0);
-  
+  const [noPathMsg, setNoPathMsg] = useState(false);
+  const [speedLabel, setSpeedLabel] = useState("Normal");
+
+  const speedRef = useRef(SPEEDS["Normal"]);
+  const cancelRef = useRef(false); // lets us bail out of an in-flight animation
+
   // Initialize with a weighted maze
   useEffect(() => {
     generateNewMaze(true);
   }, []);
-  
+
   const generateNewMaze = (weighted = true) => {
-    const centerRow = Math.floor(ROWS / 2);
-    const centerCol = Math.floor(COLS / 2);
-    
+    if (isVisualizing) cancelRef.current = true; // cancel any in-flight run
+
+    const centerRow = oddCenter(ROWS);
+    const centerCol = oddCenter(COLS);
+
     const { maze, start, end } = generateMaze(ROWS, COLS, centerRow, centerCol, weighted);
-    
+
     setGrid(maze);
     setStartPos(start);
     setEndPos(end);
     setIsWeighted(weighted);
     resetVisualization();
   };
-  
+
   const resetVisualization = () => {
+    cancelRef.current = false;
     setVisitedNodes([]);
     setPathNodes([]);
     setCurrentNode(null);
     setDistances(Array(ROWS).fill().map(() => Array(COLS).fill(Infinity)));
     setTotalCost(0);
+    setNoPathMsg(false);
   };
-  
+
   const generateDarkMaze = () => {
-    if (isVisualizing) return;
-    
-    const newGrid = Array(ROWS).fill().map((_, rowIdx) => 
+    if (isVisualizing) cancelRef.current = true;
+
+    const newGrid = Array(ROWS).fill().map((_, rowIdx) =>
       Array(COLS).fill().map((_, colIdx) => ({
         row: rowIdx,
         col: colIdx,
@@ -473,36 +504,36 @@ export default function GraphPage() {
         distance: Infinity
       }))
     );
-    
+
     // Create a few random paths
     for (let i = 0; i < 80; i++) {
       const row = Math.floor(Math.random() * ROWS);
       const col = Math.floor(Math.random() * COLS);
       newGrid[row][col].isWall = false;
     }
-    
+
     // Set start in center, end at edge
     const centerRow = Math.floor(ROWS / 2);
     const centerCol = Math.floor(COLS / 2);
     newGrid[centerRow][centerCol].isStart = true;
     newGrid[centerRow][centerCol].isWall = false;
-    
+
     // Find edge cell for end
     const edgeRow = Math.random() < 0.5 ? 0 : ROWS - 1;
     const edgeCol = Math.floor(Math.random() * COLS);
     newGrid[edgeRow][edgeCol].isEnd = true;
     newGrid[edgeRow][edgeCol].isWall = false;
-    
+
     setGrid(newGrid);
     setStartPos({ row: centerRow, col: centerCol });
     setEndPos({ row: edgeRow, col: edgeCol });
     resetVisualization();
   };
-  
+
   const generateOpenMaze = () => {
-    if (isVisualizing) return;
-    
-    const newGrid = Array(ROWS).fill().map((_, rowIdx) => 
+    if (isVisualizing) cancelRef.current = true;
+
+    const newGrid = Array(ROWS).fill().map((_, rowIdx) =>
       Array(COLS).fill().map((_, colIdx) => ({
         row: rowIdx,
         col: colIdx,
@@ -511,7 +542,7 @@ export default function GraphPage() {
         distance: Infinity
       }))
     );
-    
+
     // Add some random walls
     for (let i = 0; i < 40; i++) {
       const row = Math.floor(Math.random() * ROWS);
@@ -520,25 +551,25 @@ export default function GraphPage() {
         newGrid[row][col].isWall = true;
       }
     }
-    
+
     // Set start and end
     const centerRow = Math.floor(ROWS / 2);
     const centerCol = Math.floor(COLS / 2);
     newGrid[centerRow][centerCol].isStart = true;
-    
+
     const edgeRow = Math.random() < 0.5 ? 0 : ROWS - 1;
     const edgeCol = Math.floor(Math.random() * COLS);
     newGrid[edgeRow][edgeCol].isEnd = true;
-    
+
     setGrid(newGrid);
     setStartPos({ row: centerRow, col: centerCol });
     setEndPos({ row: edgeRow, col: edgeCol });
     resetVisualization();
   };
-  
+
   const handleCellClick = (row, col) => {
     if (isVisualizing) return;
-    
+
     const newGrid = [...grid];
     if (!newGrid[row][col].isStart && !newGrid[row][col].isEnd) {
       if (isWeighted) {
@@ -555,15 +586,24 @@ export default function GraphPage() {
         newGrid[row][col].isWall = !newGrid[row][col].isWall;
       }
       setGrid(newGrid);
+      // BUG FIX: editing the grid invalidates any path/visited cells already
+      // drawn from a previous run, so clear them instead of leaving stale state.
+      resetVisualization();
     }
   };
-  
+
+  const setSpeed = (label) => {
+    setSpeedLabel(label);
+    speedRef.current = SPEEDS[label];
+  };
+
   const solveMaze = async () => {
     if (isVisualizing || !startPos || !endPos) return;
-    
-    setIsVisualizing(true);
+
     resetVisualization();
-    
+    setIsVisualizing(true);
+    cancelRef.current = false;
+
     let result;
     switch (algorithm) {
       case "dfs":
@@ -573,64 +613,52 @@ export default function GraphPage() {
         result = bfs(grid, startPos, endPos);
         break;
       case "dijkstra":
+      default:
         result = dijkstra(grid, startPos, endPos);
         setDistances(result.distances);
         break;
-      default:
-        result = dijkstra(grid, startPos, endPos);
     }
-    
+
     // Animate visited nodes
-    for (let i = 0; i < result.visitedNodesInOrder.length; i++) {
-      setCurrentNode(result.visitedNodesInOrder[i]);
-      setVisitedNodes(prev => [...prev, result.visitedNodesInOrder[i]]);
-      await new Promise(resolve => setTimeout(resolve, SPEED));
+    const visited = [];
+    for (const node of result.visitedNodesInOrder) {
+      if (cancelRef.current) { setIsVisualizing(false); return; }
+      visited.push(node);
+      setCurrentNode(node);
+      setVisitedNodes([...visited]);
+      await new Promise(resolve => setTimeout(resolve, speedRef.current));
     }
-    
-    // Animate path and calculate total cost
     setCurrentNode(null);
-    if (result.path.length > 0) {
-      let cost = 0;
-      for (let i = 0; i < result.path.length; i++) {
-        const node = result.path[i];
-        setPathNodes(prev => [...prev, node]);
-        
-        // Calculate total cost for Dijkstra's
-        if (algorithm === "dijkstra" && i > 0) {
-          const prevNode = result.path[i-1];
-          const cellCost = grid[node.row][node.col].weight;
-          cost += cellCost;
-          setTotalCost(cost);
-        } else if (algorithm !== "dijkstra") {
-          setTotalCost(result.path.length - 1); // Steps for BFS/DFS
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, SPEED * 2));
-      }
-    } else {
-      setTimeout(() => {
-        alert("No path found! The mouse cannot reach the cheese. Try generating a new maze.");
-      }, 500);
+
+    if (result.path.length === 0) {
+      // BUG FIX: inline banner instead of a blocking alert() — alert() froze
+      // the animation state and could fire after the user navigated away.
+      setNoPathMsg(true);
+      setIsVisualizing(false);
+      return;
     }
-    
+
+    // Animate path
+    const path = [];
+    for (const node of result.path) {
+      if (cancelRef.current) { setIsVisualizing(false); return; }
+      path.push(node);
+      setPathNodes([...path]);
+      await new Promise(resolve => setTimeout(resolve, speedRef.current * 2));
+    }
+
+    // BUG FIX: set the final cost once, after the animation is fully done,
+    // instead of accumulating it step-by-step inside the loop above.
+    const cost = algorithm === "dijkstra" ? result.totalCost : result.path.length - 1;
+    setTotalCost(cost);
+
     setIsVisualizing(false);
   };
-  
-  const calculatePathCost = () => {
-    if (pathNodes.length < 2) return 0;
-    
-    if (algorithm === "dijkstra") {
-      return totalCost;
-    } else {
-      // For BFS/DFS, cost = number of steps (each step = 1)
-      return pathNodes.length - 1;
-    }
-  };
-  
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-blue-50">
       <NavBar />
-      
+
       <div className="container mx-auto px-4 py-8">
         <div className="mb-8 text-center">
           <h1 className="text-4xl font-bold text-gray-800 mb-2">
@@ -640,7 +668,7 @@ export default function GraphPage() {
             See how different algorithms handle weighted vs unweighted paths
           </p>
         </div>
-        
+
         {/* Maze Type Toggle */}
         <div className="mb-8">
           <div className="flex flex-col items-center gap-4 mb-6">
@@ -649,8 +677,8 @@ export default function GraphPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => generateNewMaze(false)}
-                  className={`px-4 py-2 rounded-lg transition-all ${!isWeighted 
-                    ? 'bg-blue-500 text-white shadow-md' 
+                  className={`px-4 py-2 rounded-lg transition-all ${!isWeighted
+                    ? 'bg-blue-500 text-white shadow-md'
                     : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
                   disabled={isVisualizing}
                 >
@@ -658,8 +686,8 @@ export default function GraphPage() {
                 </button>
                 <button
                   onClick={() => generateNewMaze(true)}
-                  className={`px-4 py-2 rounded-lg transition-all ${isWeighted 
-                    ? 'bg-amber-500 text-white shadow-md' 
+                  className={`px-4 py-2 rounded-lg transition-all ${isWeighted
+                    ? 'bg-amber-500 text-white shadow-md'
                     : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
                   disabled={isVisualizing}
                 >
@@ -667,7 +695,25 @@ export default function GraphPage() {
                 </button>
               </div>
             </div>
-            
+
+            {/* Speed control */}
+            <div className="flex items-center gap-4 bg-white p-4 rounded-xl shadow-sm">
+              <span className="text-gray-700 font-medium">Speed:</span>
+              <div className="flex gap-2">
+                {Object.keys(SPEEDS).map(label => (
+                  <button
+                    key={label}
+                    onClick={() => setSpeed(label)}
+                    className={`px-4 py-2 rounded-lg transition-all ${speedLabel === label
+                      ? 'bg-indigo-500 text-white shadow-md'
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {isWeighted && (
               <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg max-w-2xl">
                 <div className="flex items-center gap-2 text-amber-800">
@@ -683,7 +729,7 @@ export default function GraphPage() {
             )}
           </div>
         </div>
-        
+
         {/* Algorithm Selection */}
         <div className="mb-8">
           <div className="flex flex-wrap justify-center gap-4 mb-6">
@@ -699,8 +745,8 @@ export default function GraphPage() {
                 className={`
                   px-6 py-3 rounded-lg font-bold text-white
                   transition-all duration-200 shadow-md
-                  ${algorithm === algo.id 
-                    ? 'ring-4 ring-opacity-50 scale-105' 
+                  ${algorithm === algo.id
+                    ? 'ring-4 ring-opacity-50 scale-105'
                     : 'opacity-90 hover:opacity-100 hover:scale-102'
                   }
                   ${isVisualizing ? 'cursor-not-allowed' : ''}
@@ -712,7 +758,7 @@ export default function GraphPage() {
             ))}
           </div>
         </div>
-        
+
         {/* Controls */}
         <div className="flex flex-wrap gap-4 mb-6 p-4 bg-gradient-to-r from-gray-50 to-blue-50 rounded-xl shadow-sm">
           <button
@@ -721,8 +767,8 @@ export default function GraphPage() {
             className={`
               px-6 py-3 rounded-lg font-bold text-white shadow-md
               transition-all duration-200 flex items-center gap-2
-              ${isVisualizing 
-                ? 'bg-gray-400 cursor-not-allowed' 
+              ${isVisualizing
+                ? 'bg-gray-400 cursor-not-allowed'
                 : 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600'
               }
             `}
@@ -733,7 +779,18 @@ export default function GraphPage() {
             </svg>
             Visualize {algorithm === 'dfs' ? 'DFS' : algorithm === 'bfs' ? 'BFS' : 'Dijkstra'}
           </button>
-          
+
+          <button
+            onClick={resetVisualization}
+            disabled={isVisualizing}
+            className="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold rounded-lg shadow-md transition-all duration-200 flex items-center gap-2 disabled:cursor-not-allowed"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            Reset Path
+          </button>
+
           <button
             onClick={() => generateNewMaze(isWeighted)}
             disabled={isVisualizing}
@@ -744,7 +801,7 @@ export default function GraphPage() {
             </svg>
             New Maze
           </button>
-          
+
           <button
             onClick={generateDarkMaze}
             disabled={isVisualizing}
@@ -755,7 +812,7 @@ export default function GraphPage() {
             </svg>
             Dark Maze
           </button>
-          
+
           <button
             onClick={generateOpenMaze}
             disabled={isVisualizing}
@@ -767,18 +824,28 @@ export default function GraphPage() {
             Open Maze
           </button>
         </div>
-        
+
+        {/* No-path banner (replaces the old blocking alert) */}
+        {noPathMsg && (
+          <div className="mb-6 p-4 bg-rose-50 border border-rose-200 rounded-lg flex items-center gap-2 text-rose-700">
+            <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+            </svg>
+            <span><strong>No path found!</strong> The mouse can't reach the cheese. Try generating a new maze.</span>
+          </div>
+        )}
+
         {/* Maze Grid */}
         <div className="mb-8">
           <div className="bg-gray-900 rounded-xl shadow-2xl p-2 md:p-4 overflow-auto">
             <div className="flex justify-center">
-              <div 
+              <div
                 className="grid gap-0.5"
                 style={{
                   gridTemplateColumns: `repeat(${COLS}, minmax(0, 1fr))`
                 }}
               >
-                {grid.map((row, rowIdx) => 
+                {grid.map((row, rowIdx) =>
                   row.map((cell, colIdx) => {
                     const isVisited = visitedNodes.some(
                       node => node.row === rowIdx && node.col === colIdx
@@ -786,10 +853,10 @@ export default function GraphPage() {
                     const isPath = pathNodes.some(
                       node => node.row === rowIdx && node.col === colIdx
                     );
-                    const isCurrent = currentNode && 
-                      currentNode.row === rowIdx && 
+                    const isCurrent = currentNode &&
+                      currentNode.row === rowIdx &&
                       currentNode.col === colIdx;
-                    
+
                     return (
                       <GridCell
                         key={`${rowIdx}-${colIdx}`}
@@ -810,7 +877,7 @@ export default function GraphPage() {
               </div>
             </div>
           </div>
-          
+
           {/* Stats */}
           <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="p-4 bg-gradient-to-br from-emerald-50 to-green-50 rounded-xl border border-emerald-100">
@@ -823,7 +890,7 @@ export default function GraphPage() {
             </div>
             <div className="p-4 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-xl border border-amber-100">
               <div className="text-2xl font-bold text-amber-700">
-                {calculatePathCost()}
+                {totalCost}
               </div>
               <div className="text-sm text-amber-600">
                 {algorithm === 'dijkstra' ? 'Total Cost' : 'Steps'}
@@ -839,10 +906,10 @@ export default function GraphPage() {
             </div>
           </div>
         </div>
-        
+
         {/* Algorithm Comparison */}
         <AlgorithmComparison isWeighted={isWeighted} />
-        
+
         {/* Legend */}
         <div className="mt-8 p-6 bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl border border-gray-200">
           <h3 className="text-xl font-bold text-gray-800 mb-4">Legend</h3>
