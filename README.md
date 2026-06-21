@@ -143,7 +143,7 @@ AlgoViz/
 │   ├── styles/                 # Global styles
 │   ├── types/                  # TypeScript definitions
 │   ├── assets/                 # Images, icons, etc.
-│   └── App.tsx                 # Root component
+│   └── App.jsx                 # Root component
 ├── package.json
 ├── vite.config.js
 └── README.md
@@ -206,41 +206,6 @@ AlgoViz/
 - Coding interview preparers
 - Educators and teachers
 - Self-learners and enthusiasts
-
-## 🤝 Contributing
-
-We welcome contributions! Here's how you can help:
-
-1. **Fork the repository**
-2. **Create a feature branch**
-   ```bash
-   git checkout -b feature/amazing-feature
-   ```
-3. **Commit your changes**
-   ```bash
-   git commit -m 'Add amazing feature'
-   ```
-4. **Push to the branch**
-   ```bash
-   git push origin feature/amazing-feature
-   ```
-5. **Open a Pull Request**
-
-### **Areas for Contribution**
-- Add new algorithm visualizations
-- Improve existing visualizations
-- Enhance UI/UX design
-- Add educational content
-- Fix bugs and issues
-- Optimize performance
-
-## 🐛 Issue Reporting
-
-Found a bug or have a feature request? Please:
-1. Check existing issues
-2. Create a new issue with detailed description
-3. Include steps to reproduce (for bugs)
-4. Add screenshots if applicable
 
 ## 👥 Authors
 
