@@ -6,7 +6,7 @@ AlgoViz is an interactive web-based educational platform that visualizes fundame
 
 ## ✨ Live Demo
 
-🌐 **Live Site**: [AlgoViz](https://main.d3kx4fm5ys34yo.amplifyapp.com/)
+🌐 **Live Site**: [AlgoViz](https://algoviz-r45b.onrender.com/)
 
 ## 🎯 Features
 
