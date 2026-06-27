@@ -3,8 +3,15 @@ import NavBar from "../components/NavBar";
 import { randomArray } from "../utils/helpers";
 import { motion, AnimatePresence } from "framer-motion";
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Displays a queue slot's value, distinguishing a genuinely empty slot (null)
+// from a stored value of 0 — `value || "Empty"` would incorrectly show
+// "Empty" for a stored 0 since 0 is falsy.
+const displaySlotValue = (value) => (value === null || value === undefined ? "Empty" : value);
+
 export default function QueuePage() {
-  const [queue, setQueue] = useState(randomArray(4));
+  const [queue, setQueue] = useState(() => randomArray(4));
   const [value, setValue] = useState("");
   const [isAnimating, setIsAnimating] = useState(false);
   const [operationSteps, setOperationSteps] = useState([]);
@@ -12,95 +19,81 @@ export default function QueuePage() {
   const [operationType, setOperationType] = useState("");
   const [highlightedIndices, setHighlightedIndices] = useState([]);
   const [runtime, setRuntime] = useState(0);
-  
-  // Circular queue states
+  const [elapsed, setElapsed] = useState(0);
+
+  // Circular queue state
   const [isCircular, setIsCircular] = useState(false);
   const [circularSize, setCircularSize] = useState(8);
   const [frontIndex, setFrontIndex] = useState(0);
   const [rearIndex, setRearIndex] = useState(3);
   const [circularQueue, setCircularQueue] = useState(() => {
-    const arr = new Array(circularSize).fill(null);
-    const initial = randomArray(4);
-    initial.forEach((val, idx) => {
-      arr[idx] = val;
-    });
+    const arr = new Array(8).fill(null);
+    randomArray(4).forEach((val, idx) => (arr[idx] = val));
     return arr;
   });
   const [isFull, setIsFull] = useState(false);
   const [isEmpty, setIsEmpty] = useState(false);
 
-  // Update empty/full status when circular queue changes
+  // Live elapsed-time ticker while any operation is animating
+  useEffect(() => {
+    if (!isAnimating) return;
+    const startedAt = performance.now();
+    setElapsed(0);
+    const id = setInterval(() => setElapsed(Math.round(performance.now() - startedAt)), 50);
+    return () => clearInterval(id);
+  }, [isAnimating]);
+
+  // Update empty/full status whenever the circular queue's contents change
   useEffect(() => {
     if (!isCircular) return;
-    
-    const count = circularQueue.filter(item => item !== null).length;
+    const count = circularQueue.filter((item) => item !== null).length;
     setIsFull(count === circularSize);
     setIsEmpty(count === 0);
   }, [circularQueue, circularSize, isCircular]);
 
-  // Regular queue operations
+  // ---------- Regular queue operations ----------
+
   const enqueue = async () => {
     if (isAnimating || !value) return;
-    
     if (isCircular) {
       await circularEnqueue();
       return;
     }
-    
+
     setIsAnimating(true);
     setOperationType("enqueue");
-    const start = performance.now();
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
+    const start = performance.now();
 
     const newValue = Number(value);
+    const insertIndex = queue.length;
+
     const steps = [
-      {
-        action: "create_value",
-        value: newValue,
-        description: `Creating value ${newValue} to add to queue`
-      },
-      {
-        action: "find_rear",
-        description: "Moving to rear of queue",
-        index: queue.length
-      },
-      {
-        action: "add_to_rear",
-        description: `Adding ${newValue} to rear of queue`,
-        value: newValue,
-        index: queue.length
-      },
-      {
-        action: "update_rear",
-        description: "Updating rear pointer to new position",
-        index: queue.length
-      },
-      {
-        action: "enqueue_complete",
-        description: `Successfully enqueued ${newValue}!`,
-        value: newValue
-      }
+      { action: "create_value", value: newValue, description: `Creating value ${newValue} to add to queue` },
+      { action: "find_rear", description: "Moving to rear of queue" },
+      { action: "add_to_rear", value: newValue, description: `Adding ${newValue} to rear of queue` },
+      { action: "update_rear", description: "Updating rear pointer to new position" },
+      { action: "enqueue_complete", value: newValue, description: `Successfully enqueued ${newValue}!` },
     ];
 
     setOperationSteps(steps);
 
     for (let i = 0; i < steps.length; i++) {
       setCurrentStep(i);
-      
-      if (steps[i].action === "find_rear") {
-        setHighlightedIndices([...Array(queue.length).keys()]);
-        await new Promise(resolve => setTimeout(resolve, 500));
+      const step = steps[i];
+
+      if (step.action === "find_rear") {
+        setHighlightedIndices(Array.from({ length: insertIndex }, (_, k) => k));
+        await sleep(500);
+      } else if (step.action === "add_to_rear") {
+        setQueue((prev) => [...prev, newValue]);
+        setHighlightedIndices([insertIndex]);
+        await sleep(300);
+      } else {
+        await sleep(500);
       }
-      
-      if (steps[i].action === "add_to_rear") {
-        setQueue(prev => [...prev, newValue]);
-        setHighlightedIndices([queue.length]);
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     setValue("");
@@ -110,86 +103,53 @@ export default function QueuePage() {
 
   const dequeue = async () => {
     if (isAnimating || (isCircular ? isEmpty : queue.length === 0)) return;
-    
     if (isCircular) {
       await circularDequeue();
       return;
     }
-    
+
     setIsAnimating(true);
     setOperationType("dequeue");
-    const start = performance.now();
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
+    const start = performance.now();
 
     const frontValue = queue[0];
+    const remainingCount = queue.length - 1;
+
     const steps = [
-      {
-        action: "check_empty",
-        description: "Checking if queue is empty...",
-        isEmpty: queue.length === 0
-      },
-      {
-        action: "access_front",
-        description: `Accessing front element: ${frontValue}`,
-        value: frontValue,
-        index: 0
-      },
-      {
-        action: "highlight_front",
-        description: "Front element ready for removal",
-        index: 0
-      },
-      {
-        action: "remove_element",
-        description: `Removing ${frontValue} from front`,
-        value: frontValue
-      },
-      {
-        action: "shift_elements",
-        description: "Shifting all elements forward (FIFO)",
-        queueSize: queue.length - 1
-      },
-      {
-        action: "update_front",
-        description: "Front pointer now points to next element",
-        index: 0
-      },
-      {
-        action: "dequeue_complete",
-        description: `Successfully dequeued ${frontValue}!`,
-        value: frontValue
-      }
+      { action: "check_empty", description: "Checking if queue is empty..." },
+      { action: "access_front", value: frontValue, description: `Accessing front element: ${frontValue}` },
+      { action: "highlight_front", description: "Front element ready for removal" },
+      { action: "remove_element", value: frontValue, description: `Removing ${frontValue} from front` },
+      { action: "shift_elements", description: "Shifting all elements forward (FIFO)" },
+      { action: "update_front", description: "Front pointer now points to next element" },
+      { action: "dequeue_complete", value: frontValue, description: `Successfully dequeued ${frontValue}!` },
     ];
 
     setOperationSteps(steps);
 
     for (let i = 0; i < steps.length; i++) {
       setCurrentStep(i);
-      
-      if (steps[i].action === "highlight_front") {
+      const step = steps[i];
+
+      if (step.action === "highlight_front") {
         setHighlightedIndices([0]);
-        await new Promise(resolve => setTimeout(resolve, 800));
-      }
-      
-      if (steps[i].action === "remove_element") {
+        await sleep(800);
+      } else if (step.action === "remove_element") {
         setHighlightedIndices([0]);
-        await new Promise(resolve => setTimeout(resolve, 300));
-        setQueue(prev => prev.slice(1));
+        await sleep(300);
+        setQueue((prev) => prev.slice(1));
+      } else if (step.action === "shift_elements") {
+        setHighlightedIndices(Array.from({ length: remainingCount }, (_, k) => k));
+        await sleep(800);
+      } else if (step.action === "update_front") {
+        if (remainingCount > 0) setHighlightedIndices([0]);
+        await sleep(500);
+      } else {
+        await sleep(500);
       }
-      
-      if (steps[i].action === "shift_elements") {
-        const indices = [...Array(queue.length - 1).keys()].map(i => i + 1);
-        setHighlightedIndices(indices);
-        await new Promise(resolve => setTimeout(resolve, 800));
-      }
-      
-      if (steps[i].action === "update_front" && queue.length > 1) {
-        setHighlightedIndices([0]);
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     setRuntime(Math.round(performance.now() - start));
@@ -198,56 +158,36 @@ export default function QueuePage() {
 
   const peekFront = async () => {
     if (isAnimating || (isCircular ? isEmpty : queue.length === 0)) return;
-    
     if (isCircular) {
       await circularPeekFront();
       return;
     }
-    
+
     setIsAnimating(true);
     setOperationType("peek_front");
-    const start = performance.now();
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
+    const start = performance.now();
 
     const frontValue = queue[0];
     const steps = [
-      {
-        action: "check_empty",
-        description: "Checking if queue is empty...",
-        isEmpty: queue.length === 0
-      },
-      {
-        action: "access_front",
-        description: `Accessing front element without removing`,
-        value: frontValue,
-        index: 0
-      },
-      {
-        action: "highlight_front",
-        description: `Front element is ${frontValue}`,
-        value: frontValue,
-        index: 0
-      },
-      {
-        action: "peek_complete",
-        description: `Front element: ${frontValue}`,
-        value: frontValue
-      }
+      { action: "check_empty", description: "Checking if queue is empty..." },
+      { action: "access_front", value: frontValue, description: "Accessing front element without removing" },
+      { action: "highlight_front", value: frontValue, description: `Front element is ${frontValue}` },
+      { action: "peek_complete", value: frontValue, description: `Front element: ${frontValue}` },
     ];
 
     setOperationSteps(steps);
 
     for (let i = 0; i < steps.length; i++) {
       setCurrentStep(i);
-      
       if (steps[i].action === "highlight_front") {
         setHighlightedIndices([0]);
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await sleep(1000);
+      } else {
+        await sleep(500);
       }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     setRuntime(Math.round(performance.now() - start));
@@ -256,136 +196,88 @@ export default function QueuePage() {
 
   const peekRear = async () => {
     if (isAnimating || (isCircular ? isEmpty : queue.length === 0)) return;
-    
     if (isCircular) {
       await circularPeekRear();
       return;
     }
-    
+
     setIsAnimating(true);
     setOperationType("peek_rear");
-    const start = performance.now();
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
+    const start = performance.now();
 
     const rearValue = queue[queue.length - 1];
+    const rearPos = queue.length - 1;
+
     const steps = [
-      {
-        action: "check_empty",
-        description: "Checking if queue is empty...",
-        isEmpty: queue.length === 0
-      },
-      {
-        action: "traverse_to_rear",
-        description: "Traversing to rear of queue...",
-        indices: [...Array(queue.length).keys()]
-      },
-      {
-        action: "access_rear",
-        description: `Accessing rear element: ${rearValue}`,
-        value: rearValue,
-        index: queue.length - 1
-      },
-      {
-        action: "highlight_rear",
-        description: `Rear element is ${rearValue}`,
-        value: rearValue,
-        index: queue.length - 1
-      },
-      {
-        action: "peek_complete",
-        description: `Rear element: ${rearValue}`,
-        value: rearValue
-      }
+      { action: "check_empty", description: "Checking if queue is empty..." },
+      { action: "traverse_to_rear", description: "Traversing to rear of queue..." },
+      { action: "access_rear", value: rearValue, description: `Accessing rear element: ${rearValue}` },
+      { action: "highlight_rear", value: rearValue, description: `Rear element is ${rearValue}` },
+      { action: "peek_complete", value: rearValue, description: `Rear element: ${rearValue}` },
     ];
 
     setOperationSteps(steps);
 
     for (let i = 0; i < steps.length; i++) {
       setCurrentStep(i);
-      
-      if (steps[i].action === "traverse_to_rear") {
-        for (let j = 0; j < queue.length; j++) {
+      const step = steps[i];
+
+      if (step.action === "traverse_to_rear") {
+        for (let j = 0; j <= rearPos; j++) {
           setHighlightedIndices([j]);
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await sleep(300);
         }
+      } else if (step.action === "highlight_rear") {
+        setHighlightedIndices([rearPos]);
+        await sleep(800);
+      } else {
+        await sleep(500);
       }
-      
-      if (steps[i].action === "highlight_rear") {
-        setHighlightedIndices([queue.length - 1]);
-        await new Promise(resolve => setTimeout(resolve, 800));
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     setRuntime(Math.round(performance.now() - start));
     setIsAnimating(false);
   };
 
-  // Circular Queue Operations
+  // ---------- Circular queue operations ----------
+
   const circularEnqueue = async () => {
     if (isFull) {
-      alert("Circular queue is full!");
+      setOperationSteps([{ action: "blocked", description: "Cannot enqueue: circular queue is full!" }]);
+      setOperationType("circular_enqueue");
+      setCurrentStep(0);
       return;
     }
-    
+
     setIsAnimating(true);
     setOperationType("circular_enqueue");
-    const start = performance.now();
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
+    const start = performance.now();
 
     const newValue = Number(value);
     const nextRear = (rearIndex + 1) % circularSize;
-    
+
     const steps = [
-      {
-        action: "check_full",
-        description: `Checking if circular queue is full...`,
-        isFull,
-        availableSlots: circularSize - circularQueue.filter(item => item !== null).length
-      },
-      {
-        action: "calculate_next_position",
-        description: `Calculating next rear position: (${rearIndex} + 1) % ${circularSize} = ${nextRear}`,
-        currentRear: rearIndex,
-        nextRear,
-        formula: `(rear + 1) % size`
-      },
-      {
-        action: "move_to_position",
-        description: `Moving to position ${nextRear}`,
-        index: nextRear
-      },
-      {
-        action: "add_element",
-        description: `Adding ${newValue} to position ${nextRear}`,
-        value: newValue,
-        index: nextRear
-      },
-      {
-        action: "update_rear_pointer",
-        description: `Updating rear pointer from ${rearIndex} to ${nextRear}`,
-        oldRear: rearIndex,
-        newRear: nextRear
-      },
-      {
-        action: "enqueue_complete",
-        description: `Successfully enqueued ${newValue} at position ${nextRear}!`,
-        value: newValue
-      }
+      { action: "check_full", description: "Checking if circular queue is full..." },
+      { action: "calculate_next_position", description: `Calculating next rear position: (${rearIndex} + 1) % ${circularSize} = ${nextRear}` },
+      { action: "move_to_position", description: `Moving to position ${nextRear}` },
+      { action: "add_element", value: newValue, description: `Adding ${newValue} to position ${nextRear}` },
+      { action: "update_rear_pointer", description: `Updating rear pointer from ${rearIndex} to ${nextRear}` },
+      { action: "enqueue_complete", value: newValue, description: `Successfully enqueued ${newValue} at position ${nextRear}!` },
     ];
 
     setOperationSteps(steps);
 
     for (let i = 0; i < steps.length; i++) {
       setCurrentStep(i);
-      
-      if (steps[i].action === "move_to_position") {
-        // Animate moving to the position
+      const step = steps[i];
+
+      if (step.action === "move_to_position") {
         const path = [];
         let current = rearIndex;
         while (current !== nextRear) {
@@ -393,29 +285,24 @@ export default function QueuePage() {
           current = (current + 1) % circularSize;
         }
         path.push(nextRear);
-        
         for (const idx of path) {
           setHighlightedIndices([idx]);
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await sleep(250);
         }
-      }
-      
-      if (steps[i].action === "add_element") {
-        setCircularQueue(prev => {
-          const newQueue = [...prev];
-          newQueue[nextRear] = newValue;
-          return newQueue;
+      } else if (step.action === "add_element") {
+        setCircularQueue((prev) => {
+          const next = [...prev];
+          next[nextRear] = newValue;
+          return next;
         });
         setHighlightedIndices([nextRear]);
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      
-      if (steps[i].action === "update_rear_pointer") {
+        await sleep(500);
+      } else if (step.action === "update_rear_pointer") {
         setRearIndex(nextRear);
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await sleep(300);
+      } else {
+        await sleep(400);
       }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     setValue("");
@@ -425,90 +312,56 @@ export default function QueuePage() {
 
   const circularDequeue = async () => {
     if (isEmpty) {
-      alert("Circular queue is empty!");
+      setOperationSteps([{ action: "blocked", description: "Cannot dequeue: circular queue is empty!" }]);
+      setOperationType("circular_dequeue");
+      setCurrentStep(0);
       return;
     }
-    
+
     setIsAnimating(true);
     setOperationType("circular_dequeue");
-    const start = performance.now();
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
+    const start = performance.now();
 
     const frontValue = circularQueue[frontIndex];
     const nextFront = (frontIndex + 1) % circularSize;
-    
+
     const steps = [
-      {
-        action: "check_empty",
-        description: "Checking if circular queue is empty...",
-        isEmpty
-      },
-      {
-        action: "access_front",
-        description: `Accessing front element at position ${frontIndex}: ${frontValue}`,
-        value: frontValue,
-        index: frontIndex
-      },
-      {
-        action: "highlight_front",
-        description: `Front element ${frontValue} ready for removal`,
-        index: frontIndex
-      },
-      {
-        action: "remove_element",
-        description: `Removing ${frontValue} from position ${frontIndex}`,
-        value: frontValue,
-        index: frontIndex
-      },
-      {
-        action: "calculate_next_front",
-        description: `Calculating next front position: (${frontIndex} + 1) % ${circularSize} = ${nextFront}`,
-        currentFront: frontIndex,
-        nextFront,
-        formula: `(front + 1) % size`
-      },
-      {
-        action: "update_front_pointer",
-        description: `Updating front pointer from ${frontIndex} to ${nextFront}`,
-        oldFront: frontIndex,
-        newFront: nextFront
-      },
-      {
-        action: "dequeue_complete",
-        description: `Successfully dequeued ${frontValue}! New front at position ${nextFront}`,
-        value: frontValue
-      }
+      { action: "check_empty", description: "Checking if circular queue is empty..." },
+      { action: "access_front", value: frontValue, description: `Accessing front element at position ${frontIndex}: ${frontValue}` },
+      { action: "highlight_front", description: `Front element ${frontValue} ready for removal` },
+      { action: "remove_element", value: frontValue, description: `Removing ${frontValue} from position ${frontIndex}` },
+      { action: "calculate_next_front", description: `Calculating next front position: (${frontIndex} + 1) % ${circularSize} = ${nextFront}` },
+      { action: "update_front_pointer", description: `Updating front pointer from ${frontIndex} to ${nextFront}` },
+      { action: "dequeue_complete", value: frontValue, description: `Successfully dequeued ${frontValue}! New front at position ${nextFront}` },
     ];
 
     setOperationSteps(steps);
 
     for (let i = 0; i < steps.length; i++) {
       setCurrentStep(i);
-      
-      if (steps[i].action === "highlight_front") {
+      const step = steps[i];
+
+      if (step.action === "highlight_front") {
         setHighlightedIndices([frontIndex]);
-        await new Promise(resolve => setTimeout(resolve, 800));
-      }
-      
-      if (steps[i].action === "remove_element") {
-        setCircularQueue(prev => {
-          const newQueue = [...prev];
-          newQueue[frontIndex] = null;
-          return newQueue;
+        await sleep(800);
+      } else if (step.action === "remove_element") {
+        setCircularQueue((prev) => {
+          const next = [...prev];
+          next[frontIndex] = null;
+          return next;
         });
         setHighlightedIndices([frontIndex]);
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      
-      if (steps[i].action === "update_front_pointer") {
+        await sleep(500);
+      } else if (step.action === "update_front_pointer") {
         setFrontIndex(nextFront);
         setHighlightedIndices([nextFront]);
-        await new Promise(resolve => setTimeout(resolve, 300));
+        await sleep(300);
+      } else {
+        await sleep(400);
       }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     setRuntime(Math.round(performance.now() - start));
@@ -517,54 +370,37 @@ export default function QueuePage() {
 
   const circularPeekFront = async () => {
     if (isEmpty) {
-      alert("Circular queue is empty!");
+      setOperationSteps([{ action: "blocked", description: "Cannot peek: circular queue is empty!" }]);
+      setOperationType("circular_peek_front");
+      setCurrentStep(0);
       return;
     }
-    
+
     setIsAnimating(true);
     setOperationType("circular_peek_front");
-    const start = performance.now();
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
+    const start = performance.now();
 
     const frontValue = circularQueue[frontIndex];
-    
     const steps = [
-      {
-        action: "check_empty",
-        description: "Checking if circular queue is empty...",
-        isEmpty
-      },
-      {
-        action: "access_front",
-        description: `Accessing front element at position ${frontIndex}`,
-        index: frontIndex
-      },
-      {
-        action: "highlight_front",
-        description: `Front element is ${frontValue}`,
-        value: frontValue,
-        index: frontIndex
-      },
-      {
-        action: "peek_complete",
-        description: `Front element: ${frontValue}`,
-        value: frontValue
-      }
+      { action: "check_empty", description: "Checking if circular queue is empty..." },
+      { action: "access_front", description: `Accessing front element at position ${frontIndex}` },
+      { action: "highlight_front", value: frontValue, description: `Front element is ${frontValue}` },
+      { action: "peek_complete", value: frontValue, description: `Front element: ${frontValue}` },
     ];
 
     setOperationSteps(steps);
 
     for (let i = 0; i < steps.length; i++) {
       setCurrentStep(i);
-      
       if (steps[i].action === "highlight_front") {
         setHighlightedIndices([frontIndex]);
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await sleep(1000);
+      } else {
+        await sleep(500);
       }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     setRuntime(Math.round(performance.now() - start));
@@ -573,54 +409,37 @@ export default function QueuePage() {
 
   const circularPeekRear = async () => {
     if (isEmpty) {
-      alert("Circular queue is empty!");
+      setOperationSteps([{ action: "blocked", description: "Cannot peek: circular queue is empty!" }]);
+      setOperationType("circular_peek_rear");
+      setCurrentStep(0);
       return;
     }
-    
+
     setIsAnimating(true);
     setOperationType("circular_peek_rear");
-    const start = performance.now();
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
+    const start = performance.now();
 
     const rearValue = circularQueue[rearIndex];
-    
     const steps = [
-      {
-        action: "check_empty",
-        description: "Checking if circular queue is empty...",
-        isEmpty
-      },
-      {
-        action: "access_rear",
-        description: `Accessing rear element at position ${rearIndex}`,
-        index: rearIndex
-      },
-      {
-        action: "highlight_rear",
-        description: `Rear element is ${rearValue}`,
-        value: rearValue,
-        index: rearIndex
-      },
-      {
-        action: "peek_complete",
-        description: `Rear element: ${rearValue}`,
-        value: rearValue
-      }
+      { action: "check_empty", description: "Checking if circular queue is empty..." },
+      { action: "access_rear", description: `Accessing rear element at position ${rearIndex}` },
+      { action: "highlight_rear", value: rearValue, description: `Rear element is ${rearValue}` },
+      { action: "peek_complete", value: rearValue, description: `Rear element: ${rearValue}` },
     ];
 
     setOperationSteps(steps);
 
     for (let i = 0; i < steps.length; i++) {
       setCurrentStep(i);
-      
       if (steps[i].action === "highlight_rear") {
         setHighlightedIndices([rearIndex]);
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await sleep(1000);
+      } else {
+        await sleep(500);
       }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     setRuntime(Math.round(performance.now() - start));
@@ -629,20 +448,18 @@ export default function QueuePage() {
 
   const resetQueue = () => {
     if (isAnimating) return;
-    
+
     if (isCircular) {
       const arr = new Array(circularSize).fill(null);
       const initial = randomArray(4);
-      initial.forEach((val, idx) => {
-        arr[idx] = val;
-      });
+      initial.forEach((val, idx) => (arr[idx] = val));
       setCircularQueue(arr);
       setFrontIndex(0);
-      setRearIndex(3);
+      setRearIndex(initial.length - 1);
     } else {
       setQueue(randomArray(4));
     }
-    
+
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
@@ -651,8 +468,7 @@ export default function QueuePage() {
 
   const toggleQueueType = () => {
     if (isAnimating) return;
-    
-    setIsCircular(!isCircular);
+    setIsCircular((prev) => !prev);
     setHighlightedIndices([]);
     setOperationSteps([]);
     setCurrentStep(0);
@@ -661,41 +477,45 @@ export default function QueuePage() {
 
   const updateCircularSize = (size) => {
     if (isAnimating) return;
-    
     setCircularSize(size);
     const arr = new Array(size).fill(null);
     const initial = randomArray(Math.min(4, size));
-    initial.forEach((val, idx) => {
-      arr[idx] = val;
-    });
+    initial.forEach((val, idx) => (arr[idx] = val));
     setCircularQueue(arr);
     setFrontIndex(0);
     setRearIndex(initial.length - 1);
+    setHighlightedIndices([]);
+    setOperationSteps([]);
+    setCurrentStep(0);
   };
 
-  // Calculate circular queue statistics
   const getCircularQueueStats = () => {
-    const count = circularQueue.filter(item => item !== null).length;
-    const emptySlots = circularSize - count;
-    const utilization = Math.round((count / circularSize) * 100);
-    
-    return { count, emptySlots, utilization };
+    const count = circularQueue.filter((item) => item !== null).length;
+    return { count, emptySlots: circularSize - count, utilization: Math.round((count / circularSize) * 100) };
   };
 
-  const stats = isCircular ? getCircularQueueStats() : { 
-    count: queue.length, 
-    emptySlots: "∞", 
-    utilization: "Dynamic" 
+  const stats = isCircular
+    ? getCircularQueueStats()
+    : { count: queue.length, emptySlots: "∞", utilization: "Dynamic" };
+
+  const operationLabels = {
+    enqueue: "Enqueue",
+    dequeue: "Dequeue",
+    peek_front: "Peek Front",
+    peek_rear: "Peek Rear",
+    circular_enqueue: "Circular Enqueue",
+    circular_dequeue: "Circular Dequeue",
+    circular_peek_front: "Circular Peek Front",
+    circular_peek_rear: "Circular Peek Rear",
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50">
       <NavBar runtime={runtime} />
-      
+
       <div className="p-8 max-w-7xl mx-auto">
         {/* Controls */}
         <div className="mb-8 p-6 bg-white rounded-2xl shadow-lg">
-          {/* Queue Type Toggle */}
           <div className="mb-6">
             <div className="flex items-center justify-between mb-4">
               <div>
@@ -706,15 +526,13 @@ export default function QueuePage() {
                 onClick={toggleQueueType}
                 disabled={isAnimating}
                 className={`px-6 py-3 rounded-xl font-medium transition-all duration-200 ${
-                  isAnimating
-                    ? "bg-gray-300 cursor-not-allowed"
-                    : "bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white"
+                  isAnimating ? "bg-gray-300 cursor-not-allowed" : "bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white"
                 }`}
               >
                 {isCircular ? "Switch to Regular Queue" : "Switch to Circular Queue"}
               </button>
             </div>
-            
+
             {isCircular && (
               <div className="p-4 bg-gradient-to-r from-cyan-50 to-blue-50 rounded-xl border border-cyan-200">
                 <div className="flex items-center gap-4 mb-3">
@@ -726,9 +544,7 @@ export default function QueuePage() {
                         onClick={() => updateCircularSize(size)}
                         disabled={isAnimating}
                         className={`px-3 py-1 rounded-lg transition-all duration-200 ${
-                          circularSize === size
-                            ? "bg-cyan-600 text-white"
-                            : "bg-gray-100 hover:bg-gray-200 text-gray-700"
+                          circularSize === size ? "bg-cyan-600 text-white" : "bg-gray-100 hover:bg-gray-200 text-gray-700"
                         }`}
                       >
                         {size}
@@ -737,16 +553,14 @@ export default function QueuePage() {
                   </div>
                 </div>
                 <div className="text-sm text-gray-600">
-                  Circular queue uses fixed-size array with wrap-around pointers
+                  Circular queue uses fixed-size array with wrap-around pointers. Changing the size resets the queue.
                 </div>
               </div>
             )}
           </div>
 
           <div className="mb-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Value to Enqueue
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Value to Enqueue</label>
             <input
               type="number"
               className="w-full max-w-md px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-transparent transition-all duration-200"
@@ -760,57 +574,47 @@ export default function QueuePage() {
           <div className="flex flex-wrap gap-3">
             <button
               className={`px-6 py-3 rounded-xl font-medium transition-all duration-200 ${
-                isAnimating || !value || (isCircular && isFull)
-                  ? "bg-gray-300 cursor-not-allowed"
-                  : "bg-amber-600 hover:bg-amber-700 text-white"
+                isAnimating || !value || (isCircular && isFull) ? "bg-gray-300 cursor-not-allowed" : "bg-amber-600 hover:bg-amber-700 text-white"
               }`}
               onClick={enqueue}
               disabled={isAnimating || !value || (isCircular && isFull)}
             >
               Enqueue
             </button>
-            
+
             <button
               className={`px-6 py-3 rounded-xl font-medium transition-all duration-200 ${
-                isAnimating || (isCircular ? isEmpty : queue.length === 0)
-                  ? "bg-gray-300 cursor-not-allowed"
-                  : "bg-rose-600 hover:bg-rose-700 text-white"
+                isAnimating || (isCircular ? isEmpty : queue.length === 0) ? "bg-gray-300 cursor-not-allowed" : "bg-rose-600 hover:bg-rose-700 text-white"
               }`}
               onClick={dequeue}
               disabled={isAnimating || (isCircular ? isEmpty : queue.length === 0)}
             >
               Dequeue
             </button>
-            
+
             <button
               className={`px-6 py-3 rounded-xl font-medium transition-all duration-200 ${
-                isAnimating || (isCircular ? isEmpty : queue.length === 0)
-                  ? "bg-gray-300 cursor-not-allowed"
-                  : "bg-blue-600 hover:bg-blue-700 text-white"
+                isAnimating || (isCircular ? isEmpty : queue.length === 0) ? "bg-gray-300 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700 text-white"
               }`}
               onClick={peekFront}
               disabled={isAnimating || (isCircular ? isEmpty : queue.length === 0)}
             >
               Peek Front
             </button>
-            
+
             <button
               className={`px-6 py-3 rounded-xl font-medium transition-all duration-200 ${
-                isAnimating || (isCircular ? isEmpty : queue.length === 0)
-                  ? "bg-gray-300 cursor-not-allowed"
-                  : "bg-purple-600 hover:bg-purple-700 text-white"
+                isAnimating || (isCircular ? isEmpty : queue.length === 0) ? "bg-gray-300 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700 text-white"
               }`}
               onClick={peekRear}
               disabled={isAnimating || (isCircular ? isEmpty : queue.length === 0)}
             >
               Peek Rear
             </button>
-            
+
             <button
               className={`px-6 py-3 rounded-xl font-medium transition-all duration-200 ${
-                isAnimating
-                  ? "bg-gray-300 cursor-not-allowed"
-                  : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                isAnimating ? "bg-gray-300 cursor-not-allowed" : "bg-emerald-600 hover:bg-emerald-700 text-white"
               }`}
               onClick={resetQueue}
               disabled={isAnimating}
@@ -824,15 +628,7 @@ export default function QueuePage() {
         {operationSteps.length > 0 && (
           <div className="mb-8 p-6 bg-white rounded-2xl shadow-lg">
             <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              Operation Steps ({
-                operationType === "enqueue" ? "Enqueue" : 
-                operationType === "dequeue" ? "Dequeue" : 
-                operationType === "peek_front" ? "Peek Front" : 
-                operationType === "peek_rear" ? "Peek Rear" :
-                operationType === "circular_enqueue" ? "Circular Enqueue" :
-                operationType === "circular_dequeue" ? "Circular Dequeue" :
-                operationType === "circular_peek_front" ? "Circular Peek Front" : "Circular Peek Rear"
-              })
+              Operation Steps ({operationLabels[operationType] ?? "Operation"})
             </h3>
             <div className="space-y-2">
               {operationSteps.map((step, index) => (
@@ -842,23 +638,23 @@ export default function QueuePage() {
                   animate={{ opacity: index <= currentStep ? 1 : 0.4, y: 0 }}
                   className={`p-4 rounded-lg border-2 transition-all duration-200 ${
                     index === currentStep
-                      ? "border-amber-500 bg-amber-50"
+                      ? step.action === "blocked"
+                        ? "border-rose-500 bg-rose-50"
+                        : "border-amber-500 bg-amber-50"
                       : "border-gray-200"
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                      index === currentStep
-                        ? "bg-amber-500 text-white"
-                        : "bg-gray-200 text-gray-600"
-                    }`}>
+                    <div
+                      className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                        index === currentStep ? (step.action === "blocked" ? "bg-rose-500 text-white" : "bg-amber-500 text-white") : "bg-gray-200 text-gray-600"
+                      }`}
+                    >
                       {index + 1}
                     </div>
                     <span className="text-gray-700">{step.description}</span>
                     {step.value !== undefined && (
-                      <span className="ml-auto px-3 py-1 bg-amber-100 text-amber-800 rounded-full text-sm font-medium">
-                        Value: {step.value}
-                      </span>
+                      <span className="ml-auto px-3 py-1 bg-amber-100 text-amber-800 rounded-full text-sm font-medium">Value: {step.value}</span>
                     )}
                   </div>
                 </motion.div>
@@ -877,44 +673,35 @@ export default function QueuePage() {
               {isCircular ? "Circular Queue" : "Regular Queue"}
             </div>
           </div>
-          
+
           <div className="flex flex-col lg:flex-row gap-12">
-            {/* Main Queue Visualization */}
             <div className="flex-1">
-              {/* Front and Rear Pointers */}
               <div className="flex justify-between mb-6">
                 <div className="flex flex-col items-center">
                   <div className="text-sm font-medium text-gray-600 mb-2">Front Pointer</div>
                   <div className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-100 to-blue-50 rounded-xl border border-blue-200">
-                    <span className="text-blue-800 font-semibold">
-                      {isCircular ? `FRONT: ${frontIndex}` : "FRONT"}
-                    </span>
+                    <span className="text-blue-800 font-semibold">{isCircular ? `FRONT: ${frontIndex}` : "FRONT"}</span>
                     <div className="w-8 h-1 bg-blue-400" />
                     <div className="w-3 h-3 border-r-2 border-t-2 border-blue-400 transform rotate-45" />
                   </div>
                 </div>
-                
+
                 <div className="flex flex-col items-center">
                   <div className="text-sm font-medium text-gray-600 mb-2">Rear Pointer</div>
                   <div className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-100 to-purple-50 rounded-xl border border-purple-200">
-                    <span className="text-purple-800 font-semibold">
-                      {isCircular ? `REAR: ${rearIndex}` : "REAR"}
-                    </span>
+                    <span className="text-purple-800 font-semibold">{isCircular ? `REAR: ${rearIndex}` : "REAR"}</span>
                     <div className="w-8 h-1 bg-purple-400" />
                     <div className="w-3 h-3 border-r-2 border-t-2 border-purple-400 transform rotate-45" />
                   </div>
                 </div>
               </div>
-              
-{/* Circular Queue Visualization */}
+
+              {/* Circular Queue Visualization */}
               {isCircular ? (
                 <div className="relative">
-                  {/* Circular layout container */}
                   <div className="relative mx-auto w-[500px] h-[500px]">
-                    {/* Circular background */}
                     <div className="absolute inset-0 rounded-full border-4 border-cyan-200 bg-gradient-to-br from-cyan-50 to-blue-50" />
-                    
-                    {/* Center info */}
+
                     <div className="absolute inset-0 flex items-center justify-center">
                       <div className="text-center z-20 bg-white/80 rounded-lg px-4 py-2">
                         <div className="text-lg font-bold text-gray-800">Circular Queue</div>
@@ -922,98 +709,70 @@ export default function QueuePage() {
                         <div className="text-xs text-gray-500">Wrap-around pointers</div>
                       </div>
                     </div>
-                    
-                    {/* Circular queue elements */}
+
                     {circularQueue.map((item, index) => {
                       const isHighlighted = highlightedIndices.includes(index);
                       const isFront = index === frontIndex;
                       const isRear = index === rearIndex;
                       const isEmptySlot = item === null;
-                      const angle = (index * 360) / circularSize - 90; // Start from top
+                      const angle = (index * 360) / circularSize - 90;
                       const radius = 180;
-                      const x = 250 + radius * Math.cos(angle * Math.PI / 180);
-                      const y = 250 + radius * Math.sin(angle * Math.PI / 180);
-                      
-                      // Calculate angle for arrow direction
-                      const nextAngle = ((index + 1) * 360) / circularSize - 90;
-                      const arrowAngle = (angle + nextAngle) / 2;
-                      
+                      const x = 250 + radius * Math.cos((angle * Math.PI) / 180);
+                      const y = 250 + radius * Math.sin((angle * Math.PI) / 180);
+
                       return (
                         <motion.div
                           key={index}
                           initial={{ opacity: 0, scale: 0 }}
-                          animate={{ 
-                            opacity: 1, 
-                            scale: 1
-                          }}
-                          transition={{ 
-                            duration: 0.3,
-                            delay: index * 0.05
-                          }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          transition={{ duration: 0.3, delay: index * 0.05 }}
                           className={`absolute ${isHighlighted ? "z-10" : "z-0"}`}
-                          style={{
-                            left: `${x}px`,
-                            top: `${y}px`,
-                            transform: 'translate(-50%, -50%)'
-                          }}
+                          style={{ left: `${x}px`, top: `${y}px`, transform: "translate(-50%, -50%)" }}
                         >
-                          {/* Position indicator */}
-                          <div 
+                          <div
                             className="absolute left-1/2 transform -translate-x-1/2 text-xs text-gray-500 font-mono"
                             style={{
-                              top: angle >= -90 && angle <= 90 ? '-24px' : 'auto',
-                              bottom: angle < -90 || angle > 90 ? '-24px' : 'auto'
+                              top: angle >= -90 && angle <= 90 ? "-24px" : "auto",
+                              bottom: angle < -90 || angle > 90 ? "-24px" : "auto",
                             }}
                           >
                             [{index}]
                           </div>
-                          
-                          {/* Queue element */}
-                          <div className={`relative w-20 h-20 rounded-full border-2 flex items-center justify-center transition-all duration-300 ${
-                            isEmptySlot
-                              ? "bg-gradient-to-br from-gray-100 to-gray-200 border-gray-300"
-                              : isHighlighted
+
+                          <div
+                            className={`relative w-20 h-20 rounded-full border-2 flex items-center justify-center transition-all duration-300 ${
+                              isEmptySlot
+                                ? "bg-gradient-to-br from-gray-100 to-gray-200 border-gray-300"
+                                : isHighlighted
                                 ? "bg-gradient-to-br from-amber-500 to-orange-500 shadow-lg ring-4 ring-amber-300 border-amber-600"
                                 : "bg-gradient-to-br from-amber-400 to-amber-500 shadow-md border-amber-500"
-                          }`}>
+                            }`}
+                          >
                             {!isEmptySlot ? (
                               <div className="text-white font-bold text-xl">{item}</div>
                             ) : (
                               <div className="text-gray-400 text-xs">Empty</div>
                             )}
-                            
-                            {/* Front/Rear indicators */}
+
                             {isFront && !isEmptySlot && (
                               <div className="absolute -top-3 -left-3">
-                                <div className="w-8 h-8 bg-blue-500 text-white text-xs font-bold rounded-full flex items-center justify-center">
-                                  F
-                                </div>
+                                <div className="w-8 h-8 bg-blue-500 text-white text-xs font-bold rounded-full flex items-center justify-center">F</div>
                               </div>
                             )}
-                            
+
                             {isRear && !isEmptySlot && (
                               <div className="absolute -bottom-3 -right-3">
-                                <div className="w-8 h-8 bg-purple-500 text-white text-xs font-bold rounded-full flex items-center justify-center">
-                                  R
-                                </div>
+                                <div className="w-8 h-8 bg-purple-500 text-white text-xs font-bold rounded-full flex items-center justify-center">R</div>
                               </div>
                             )}
                           </div>
                         </motion.div>
                       );
                     })}
-                    
-                    {/* Draw arrows between elements */}
+
                     <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 1 }}>
                       <defs>
-                        <marker
-                          id="arrowhead"
-                          markerWidth="10"
-                          markerHeight="10"
-                          refX="9"
-                          refY="3"
-                          orient="auto"
-                        >
+                        <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
                           <polygon points="0 0, 10 3, 0 6" fill="#67e8f9" />
                         </marker>
                       </defs>
@@ -1021,18 +780,17 @@ export default function QueuePage() {
                         const angle = (index * 360) / circularSize - 90;
                         const nextAngle = ((index + 1) * 360) / circularSize - 90;
                         const radius = 180;
-                        
-                        const x1 = 250 + radius * Math.cos(angle * Math.PI / 180);
-                        const y1 = 250 + radius * Math.sin(angle * Math.PI / 180);
-                        const x2 = 250 + radius * Math.cos(nextAngle * Math.PI / 180);
-                        const y2 = 250 + radius * Math.sin(nextAngle * Math.PI / 180);
-                        
-                        // Calculate control point for curved arrow
+
+                        const x1 = 250 + radius * Math.cos((angle * Math.PI) / 180);
+                        const y1 = 250 + radius * Math.sin((angle * Math.PI) / 180);
+                        const x2 = 250 + radius * Math.cos((nextAngle * Math.PI) / 180);
+                        const y2 = 250 + radius * Math.sin((nextAngle * Math.PI) / 180);
+
                         const midAngle = (angle + nextAngle) / 2;
                         const controlRadius = radius + 30;
-                        const cx = 250 + controlRadius * Math.cos(midAngle * Math.PI / 180);
-                        const cy = 250 + controlRadius * Math.sin(midAngle * Math.PI / 180);
-                        
+                        const cx = 250 + controlRadius * Math.cos((midAngle * Math.PI) / 180);
+                        const cy = 250 + controlRadius * Math.sin((midAngle * Math.PI) / 180);
+
                         return (
                           <path
                             key={`arrow-${index}`}
@@ -1047,8 +805,7 @@ export default function QueuePage() {
                       })}
                     </svg>
                   </div>
-                  
-                  {/* Wrap-around indicator */}
+
                   <div className="flex justify-center gap-12 mt-8">
                     <div className="flex items-center gap-2">
                       <div className="w-8 h-8 rounded-full bg-cyan-100 border-2 border-cyan-300 flex items-center justify-center">
@@ -1062,7 +819,7 @@ export default function QueuePage() {
                 /* Regular Queue Visualization */
                 <div className="relative">
                   <div className="absolute -inset-2 border-4 border-amber-200 rounded-2xl" />
-                  
+
                   <div className="absolute -top-10 left-1/2 transform -translate-x-1/2 flex items-center gap-2">
                     <div className="text-sm text-gray-600">FIFO Flow</div>
                     <div className="flex items-center">
@@ -1070,47 +827,34 @@ export default function QueuePage() {
                       <div className="w-3 h-3 border-r-2 border-t-2 border-amber-400 transform rotate-45" />
                     </div>
                   </div>
-                  
+
                   <div className="flex flex-wrap gap-4 p-6 justify-center min-h-48">
                     <AnimatePresence>
                       {queue.map((item, index) => {
                         const isHighlighted = highlightedIndices.includes(index);
                         const isFront = index === 0;
                         const isRear = index === queue.length - 1;
-                        
+
                         return (
                           <motion.div
                             key={`${item}-${index}`}
                             layout
                             initial={{ opacity: 0, scale: 0.9, x: -20 }}
-                            animate={{ 
-                              opacity: 1, 
-                              scale: 1,
-                              x: 0,
-                              borderColor: isHighlighted ? "#f59e0b" : "#fbbf24"
-                            }}
+                            animate={{ opacity: 1, scale: 1, x: 0, borderColor: isHighlighted ? "#f59e0b" : "#fbbf24" }}
                             exit={{ opacity: 0, scale: 0.8, x: 20 }}
-                            transition={{ 
-                              duration: 0.3,
-                              type: "spring",
-                              stiffness: 200
-                            }}
+                            transition={{ duration: 0.3, type: "spring", stiffness: 200 }}
                             className="relative"
                           >
-                            <div className={`relative w-32 h-32 rounded-xl border-2 transition-all duration-300 ${
-                              isHighlighted
-                                ? "bg-gradient-to-br from-amber-500 to-orange-500 shadow-lg ring-4 ring-amber-300"
-                                : "bg-gradient-to-br from-amber-400 to-amber-500 shadow-md"
-                            }`}>
+                            <div
+                              className={`relative w-32 h-32 rounded-xl border-2 transition-all duration-300 ${
+                                isHighlighted ? "bg-gradient-to-br from-amber-500 to-orange-500 shadow-lg ring-4 ring-amber-300" : "bg-gradient-to-br from-amber-400 to-amber-500 shadow-md"
+                              }`}
+                            >
                               <div className="h-full flex flex-col items-center justify-center p-4">
-                                <div className="text-3xl font-bold text-white mb-2">
-                                  {item}
-                                </div>
-                                <div className="text-sm text-amber-100">
-                                  Position: {index}
-                                </div>
+                                <div className="text-3xl font-bold text-white mb-2">{item}</div>
+                                <div className="text-sm text-amber-100">Position: {index}</div>
                               </div>
-                              
+
                               {index < queue.length - 1 && (
                                 <div className="absolute right-0 top-1/2 transform translate-x-1/2 -translate-y-1/2">
                                   <div className="w-8 h-1 bg-amber-300" />
@@ -1118,65 +862,37 @@ export default function QueuePage() {
                                 </div>
                               )}
                             </div>
-                            
+
                             {isFront && (
-                              <motion.div
-                                initial={{ scale: 0 }}
-                                animate={{ scale: 1 }}
-                                className="absolute -top-6 left-1/2 transform -translate-x-1/2"
-                              >
-                                <div className="px-3 py-1 bg-blue-500 text-white text-sm font-bold rounded-full whitespace-nowrap">
-                                  FRONT
-                                </div>
+                              <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute -top-6 left-1/2 transform -translate-x-1/2">
+                                <div className="px-3 py-1 bg-blue-500 text-white text-sm font-bold rounded-full whitespace-nowrap">FRONT</div>
                               </motion.div>
                             )}
-                            
+
                             {isRear && (
-                              <motion.div
-                                initial={{ scale: 0 }}
-                                animate={{ scale: 1 }}
-                                className="absolute -top-6 left-1/2 transform -translate-x-1/2"
-                              >
-                                <div className="px-3 py-1 bg-purple-500 text-white text-sm font-bold rounded-full whitespace-nowrap">
-                                  REAR
-                                </div>
+                              <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute -top-6 left-1/2 transform -translate-x-1/2">
+                                <div className="px-3 py-1 bg-purple-500 text-white text-sm font-bold rounded-full whitespace-nowrap">REAR</div>
                               </motion.div>
                             )}
-                            
+
                             {isHighlighted && operationType === "enqueue" && isRear && (
-                              <motion.div
-                                initial={{ scale: 0 }}
-                                animate={{ scale: 1 }}
-                                className="absolute -bottom-3 left-1/2 transform -translate-x-1/2"
-                              >
-                                <div className="px-3 py-1 bg-emerald-500 text-white text-sm font-bold rounded-full">
-                                  ENQUEUE HERE
-                                </div>
+                              <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute -bottom-3 left-1/2 transform -translate-x-1/2">
+                                <div className="px-3 py-1 bg-emerald-500 text-white text-sm font-bold rounded-full">ENQUEUE HERE</div>
                               </motion.div>
                             )}
-                            
+
                             {isHighlighted && operationType === "dequeue" && isFront && (
-                              <motion.div
-                                initial={{ scale: 0 }}
-                                animate={{ scale: 1 }}
-                                className="absolute -bottom-3 left-1/2 transform -translate-x-1/2"
-                              >
-                                <div className="px-3 py-1 bg-rose-500 text-white text-sm font-bold rounded-full">
-                                  DEQUEUE FROM HERE
-                                </div>
+                              <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute -bottom-3 left-1/2 transform -translate-x-1/2">
+                                <div className="px-3 py-1 bg-rose-500 text-white text-sm font-bold rounded-full">DEQUEUE FROM HERE</div>
                               </motion.div>
                             )}
                           </motion.div>
                         );
                       })}
                     </AnimatePresence>
-                    
+
                     {queue.length === 0 && (
-                      <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="py-16 text-center"
-                      >
+                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-16 text-center">
                         <div className="text-gray-400 text-lg mb-2">Queue is Empty</div>
                         <div className="text-sm text-gray-500">Enqueue some values to get started!</div>
                       </motion.div>
@@ -1184,47 +900,43 @@ export default function QueuePage() {
                   </div>
                 </div>
               )}
-              
+
               {/* Queue Status */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-8">
                 <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-xl">
                   <div className="text-sm text-blue-700 mb-1">Front Element</div>
                   <div className="text-xl font-bold text-blue-800">
-                    {isCircular 
-                      ? (circularQueue[frontIndex] || "Empty")
-                      : (queue.length > 0 ? queue[0] : "Empty")
-                    }
+                    {isCircular ? displaySlotValue(circularQueue[frontIndex]) : queue.length > 0 ? queue[0] : "Empty"}
                   </div>
                 </div>
-                
+
                 <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-xl">
                   <div className="text-sm text-purple-700 mb-1">Rear Element</div>
                   <div className="text-xl font-bold text-purple-800">
-                    {isCircular 
-                      ? (circularQueue[rearIndex] || "Empty")
-                      : (queue.length > 0 ? queue[queue.length - 1] : "Empty")
-                    }
+                    {isCircular ? displaySlotValue(circularQueue[rearIndex]) : queue.length > 0 ? queue[queue.length - 1] : "Empty"}
                   </div>
                 </div>
-                
+
                 <div className="bg-gradient-to-br from-amber-50 to-amber-100 p-4 rounded-xl">
                   <div className="text-sm text-amber-700 mb-1">Queue Size</div>
                   <div className="text-xl font-bold text-amber-800">
                     {stats.count} {isCircular ? `of ${circularSize}` : "elements"}
                   </div>
                 </div>
-                
+
+                <div className="bg-gradient-to-br from-rose-50 to-pink-100 p-4 rounded-xl">
+                  <div className="text-sm text-rose-700 mb-1">Time Taken</div>
+                  <div className="text-xl font-bold text-rose-800">{isAnimating ? `${elapsed}ms` : runtime > 0 ? `${runtime}ms` : "—"}</div>
+                </div>
+
                 <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 p-4 rounded-xl">
                   <div className="text-sm text-emerald-700 mb-1">Status</div>
                   <div className="text-xl font-bold text-emerald-800">
-                    {isCircular 
-                      ? (isFull ? "Full" : isEmpty ? "Empty" : "Active")
-                      : (queue.length === 0 ? "Empty" : "Active")
-                    }
+                    {isCircular ? (isFull ? "Full" : isEmpty ? "Empty" : "Active") : queue.length === 0 ? "Empty" : "Active"}
                   </div>
                 </div>
               </div>
-              
+
               {/* Circular Queue Stats */}
               {isCircular && (
                 <div className="mt-6 p-4 bg-gradient-to-r from-cyan-50 to-blue-50 rounded-xl border border-cyan-200">
@@ -1246,33 +958,26 @@ export default function QueuePage() {
                 </div>
               )}
             </div>
-            
+
             {/* Queue Properties */}
             <div className="lg:w-80 bg-gradient-to-br from-amber-50 to-orange-50 p-6 rounded-2xl border border-amber-200">
-              <h4 className="text-lg font-semibold text-gray-800 mb-4">
-                {isCircular ? "Circular Queue Properties" : "Queue Properties"}
-              </h4>
-              
+              <h4 className="text-lg font-semibold text-gray-800 mb-4">{isCircular ? "Circular Queue Properties" : "Queue Properties"}</h4>
+
               <div className="space-y-4">
                 <div>
                   <div className="text-sm text-gray-600 mb-1">Queue Type</div>
-                  <div className="text-lg font-semibold text-gray-800">
-                    {isCircular ? "Fixed-size Circular Queue" : "Dynamic Queue"}
-                  </div>
+                  <div className="text-lg font-semibold text-gray-800">{isCircular ? "Fixed-size Circular Queue" : "Dynamic Queue"}</div>
                 </div>
-                
+
                 <div>
-                  <div className="text-sm text-gray-600 mb-1">
-                    {isCircular ? "Circular Buffer Principle" : "FIFO Principle"}
-                  </div>
+                  <div className="text-sm text-gray-600 mb-1">{isCircular ? "Circular Buffer Principle" : "FIFO Principle"}</div>
                   <div className="text-sm text-gray-700">
-                    {isCircular 
+                    {isCircular
                       ? "Uses fixed-size array with wrap-around pointers. When end is reached, pointers wrap around to beginning."
-                      : "First In, First Out - The first element enqueued is the first one dequeued."
-                    }
+                      : "First In, First Out - The first element enqueued is the first one dequeued."}
                   </div>
                 </div>
-                
+
                 <div className="pt-4 border-t border-amber-200">
                   <div className="text-sm text-gray-600 mb-2">Operations:</div>
                   <ul className="space-y-2 text-sm">
@@ -1294,7 +999,7 @@ export default function QueuePage() {
                     </li>
                   </ul>
                 </div>
-                
+
                 <div className="pt-4 border-t border-amber-200">
                   <div className="text-sm text-gray-600 mb-2">Key Characteristics:</div>
                   <ul className="space-y-1 text-xs text-gray-700">

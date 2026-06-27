@@ -1,30 +1,25 @@
 // pages/TreePage.jsx
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import NavBar from "../components/NavBar";
 import TreeVisualizer from "../components/TreeVisualizer";
 import ControlsPanel from "../components/ControlsPanel";
 import AVLBuilder from "../components/AVLBuilder";
 import { generateRandomTree, traverseTree } from "../utils/treeAlgorithms";
-import { TREE_TYPES, TRAVERSAL_TYPES } from "../utils/treeTypes";
+import { TREE_TYPES } from "../utils/treeTypes";
 import { buildAVLFromArray } from "../utils/avlOperations";
 
 export default function TreePage() {
-  const [treeType, setTreeType] = useState(TREE_TYPES.BINARY);
-  const [root, setRoot] = useState(null);
-  const [traversalType, setTraversalType] = useState(null);
-  const [isAnimating, setIsAnimating] = useState(false);
-  const [highlightedNodes, setHighlightedNodes] = useState([]);
-  const [speed, setSpeed] = useState(500);
-  const [showAVLBuilder, setShowAVLBuilder] = useState(false);
-  const [steps, setSteps] = useState([]);
-  const [currentStep, setCurrentStep] = useState(0);
-  const [treeData, setTreeData] = useState({ nodes: [], edges: [] });
-  const treeRef = useRef(null);
+  const [treeType, setTreeType]               = useState(TREE_TYPES.BINARY);
+  const [root, setRoot]                       = useState(null);
+  const [traversalType, setTraversalType]     = useState(null);
+  const [isAnimating, setIsAnimating]         = useState(false);
+  const [highlightedNodes, setHighlightedNodes] = useState([]); // node ids
+  const [speed, setSpeed]                     = useState(500);
+  const [showAVLBuilder, setShowAVLBuilder]   = useState(false);
+  const [steps, setSteps]                     = useState([]);
+  const [currentStep, setCurrentStep]         = useState(0);
 
-  // Generate initial random tree
-  useEffect(() => {
-    generateNewTree();
-  }, [treeType]);
+  useEffect(() => { generateNewTree(); }, [treeType]);
 
   const generateNewTree = () => {
     const newRoot = generateRandomTree(treeType);
@@ -37,17 +32,14 @@ export default function TreePage() {
 
   const handleTraversal = async (type) => {
     if (!root || isAnimating) return;
-    
     setIsAnimating(true);
     setTraversalType(type);
-    const nodes = traverseTree(root, type);
-    
-    // Animate traversal
-    for (let i = 0; i < nodes.length; i++) {
-      setHighlightedNodes(nodes.slice(0, i + 1));
+    // traverseTree now returns node IDs (fix bug #3)
+    const nodeIds = traverseTree(root, type);
+    for (let i = 0; i < nodeIds.length; i++) {
+      setHighlightedNodes(nodeIds.slice(0, i + 1));
       await new Promise(resolve => setTimeout(resolve, speed));
     }
-    
     setIsAnimating(false);
   };
 
@@ -55,35 +47,33 @@ export default function TreePage() {
     setTreeType(TREE_TYPES.AVL);
     setShowAVLBuilder(false);
     
-    // Build AVL tree step by step
+    // buildAVLFromArray now only emits completed_insert steps with .tree always set
     const { root: avlRoot, steps: buildSteps } = await buildAVLFromArray(numbers);
     
     setSteps(buildSteps);
     setCurrentStep(0);
     
-    // Animate through the steps
     if (buildSteps.length > 0) {
       setIsAnimating(true);
       for (let i = 0; i < buildSteps.length; i++) {
         setCurrentStep(i);
-        setRoot(buildSteps[i].tree);
-        setHighlightedNodes([buildSteps[i].value]);
+        setRoot(buildSteps[i].tree); // .tree is always defined now (fix bug #1)
+        setHighlightedNodes([]);
         await new Promise(resolve => setTimeout(resolve, speed * 1.5));
       }
       setIsAnimating(false);
-      setHighlightedNodes([]);
     }
     
-    // Set final tree
-    if (avlRoot) {
-      setRoot(avlRoot);
-    }
+    if (avlRoot) setRoot(avlRoot);
   };
 
-  // Handle tree type change
   const handleTreeTypeChange = (type) => {
     setTreeType(type);
-    generateNewTree();
+  };
+
+  const jumpToStep = (idx) => {
+    setCurrentStep(idx);
+    setRoot(steps[idx].tree);
   };
 
   return (
@@ -170,12 +160,7 @@ export default function TreePage() {
               
               <div className="flex gap-2">
                 <button
-                  onClick={() => {
-                    if (currentStep > 0) {
-                      setCurrentStep(currentStep - 1);
-                      setRoot(steps[currentStep - 1].tree);
-                    }
-                  }}
+                  onClick={() => currentStep > 0 && jumpToStep(currentStep - 1)}
                   disabled={currentStep === 0}
                   className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50 transition-all flex items-center gap-2"
                 >
@@ -185,12 +170,7 @@ export default function TreePage() {
                   Previous
                 </button>
                 <button
-                  onClick={() => {
-                    if (currentStep < steps.length - 1) {
-                      setCurrentStep(currentStep + 1);
-                      setRoot(steps[currentStep + 1].tree);
-                    }
-                  }}
+                  onClick={() => currentStep < steps.length - 1 && jumpToStep(currentStep + 1)}
                   disabled={currentStep === steps.length - 1}
                   className="px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-lg hover:opacity-90 disabled:opacity-50 transition-all flex items-center gap-2"
                 >
@@ -207,10 +187,7 @@ export default function TreePage() {
                 {steps.map((step, idx) => (
                   <button
                     key={idx}
-                    onClick={() => {
-                      setCurrentStep(idx);
-                      setRoot(step.tree);
-                    }}
+                    onClick={() => jumpToStep(idx)}
                     className={`flex-1 min-w-[60px] h-3 rounded-full cursor-pointer transition-all ${
                       idx <= currentStep 
                         ? 'bg-gradient-to-r from-emerald-500 to-teal-500' 
@@ -218,9 +195,7 @@ export default function TreePage() {
                     } ${idx === currentStep ? 'ring-2 ring-emerald-400 ring-offset-2' : ''}`}
                     title={`Step ${idx + 1}: Insert ${step.value}`}
                   >
-                    <div className="text-xs text-center mt-4 text-gray-600">
-                      {step.value}
-                    </div>
+                    <div className="text-xs text-center mt-4 text-gray-600">{step.value}</div>
                   </button>
                 ))}
               </div>

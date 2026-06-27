@@ -1,364 +1,388 @@
-// pages/graph.jsx
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import NavBar from "../components/NavBar";
 
-// ─── Maze generation with weights ──────────────────────────────
-const generateMaze = (rows, cols, startRow, startCol, isWeighted = false) => {
-  const maze = Array(rows).fill().map((_, rowIdx) =>
-    Array(cols).fill().map((_, colIdx) => ({
-      row: rowIdx,
-      col: colIdx,
-      isWall: true,
-      weight: 1,
-      distance: Infinity
-    }))
-  );
-
-  // Directions: up, right, down, left
-  const directions = [
-    { dr: -2, dc: 0 },
-    { dr: 0, dc: 2 },
-    { dr: 2, dc: 0 },
-    { dr: 0, dc: -2 }
-  ];
-
-  const stack = [{ r: startRow, c: startCol }];
-  maze[startRow][startCol].isWall = false;
-
-  while (stack.length > 0) {
-    const current = stack[stack.length - 1];
-    const { r, c } = current;
-
-    // Shuffle directions
-    const shuffledDirs = [...directions].sort(() => Math.random() - 0.5);
-    let found = false;
-
-    for (const dir of shuffledDirs) {
-      const nr = r + dir.dr;
-      const nc = c + dir.dc;
-
-      if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && maze[nr][nc].isWall) {
-        // Carve path
-        maze[r + dir.dr/2][c + dir.dc/2].isWall = false;
-        maze[nr][nc].isWall = false;
-        stack.push({ r: nr, c: nc });
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) {
-      stack.pop();
-    }
-  }
-
-  // Add weights if weighted mode
-  if (isWeighted) {
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        if (!maze[row][col].isWall && Math.random() < 0.25) {
-          maze[row][col].weight = 3; // "Difficult terrain"
-        }
-      }
-    }
-  }
-
-  // Create entrance and exit
-  maze[startRow][startCol].isStart = true;
-
-  // Find furthest point from start for exit
-  let exitRow = startRow;
-  let exitCol = startCol;
-  let maxDist = 0;
-
-  // Simple BFS to find furthest point
-  const visited = Array(rows).fill().map(() => Array(cols).fill(false));
-  const queue = [{ r: startRow, c: startCol, dist: 0 }];
-  visited[startRow][startCol] = true;
-
-  while (queue.length > 0) {
-    const { r, c, dist } = queue.shift();
-
-    if (dist > maxDist && !maze[r][c].isWall) {
-      maxDist = dist;
-      exitRow = r;
-      exitCol = c;
-    }
-
-    const neighbors = [
-      { r: r-1, c },
-      { r: r+1, c },
-      { r, c: c-1 },
-      { r, c: c+1 }
-    ];
-
-    for (const neighbor of neighbors) {
-      if (
-        neighbor.r >= 0 && neighbor.r < rows &&
-        neighbor.c >= 0 && neighbor.c < cols &&
-        !visited[neighbor.r][neighbor.c] &&
-        !maze[neighbor.r][neighbor.c].isWall
-      ) {
-        visited[neighbor.r][neighbor.c] = true;
-        queue.push({ r: neighbor.r, c: neighbor.c, dist: dist + 1 });
-      }
-    }
-  }
-
-  maze[exitRow][exitCol].isEnd = true;
-
-  return { maze, start: { row: startRow, col: startCol }, end: { row: exitRow, col: exitCol } };
-};
-
-// BUG FIX: nearest ODD center coordinate. The carving algorithm steps in
-// strides of 2, so an even start row/col offsets the whole reachable set
-// from the grid's wall lattice and can produce a maze that looks solid.
-// Keeps the "mouse starts near the middle" feel from the original design.
 const oddCenter = (size) => {
   const c = Math.floor(size / 2);
   return c % 2 === 1 ? c : c - 1;
 };
 
-// DFS Algorithm for maze solving
-const dfs = (grid, start, end) => {
+const blankGrid = (rows, cols) =>
+  Array(rows)
+    .fill(null)
+    .map((_, r) =>
+      Array(cols)
+        .fill(null)
+        .map((_, c) => ({ row: r, col: c, isWall: true, weight: 1 }))
+    );
+
+const bfsFurthest = (grid, sr, sc) => {
   const rows = grid.length;
   const cols = grid[0].length;
-  const visited = Array(rows).fill().map(() => Array(cols).fill(false));
-  const prev = Array(rows).fill().map(() => Array(cols).fill(null));
+  const vis = Array(rows).fill(null).map(() => Array(cols).fill(false));
+  const q = [{ r: sr, c: sc, dist: 0 }];
+  vis[sr][sc] = true;
+  let best = { r: sr, c: sc, dist: 0 };
+  while (q.length) {
+    const { r, c, dist } = q.shift();
+    if (dist > best.dist) best = { r, c, dist };
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && !vis[nr][nc] && !grid[nr][nc].isWall) {
+        vis[nr][nc] = true;
+        q.push({ r: nr, c: nc, dist: dist + 1 });
+      }
+    }
+  }
+  return best;
+};
+
+const applyWeights = (grid, density = 0.25) => {
+  const rows = grid.length;
+  const cols = grid[0].length;
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      if (!grid[r][c].isWall)
+        grid[r][c].weight = Math.random() < density ? 3 : 1;
+};
+
+// Punches extra openings into an otherwise "perfect" maze to create loops.
+// A perfect maze (a spanning tree) has exactly ONE route between any two
+// cells — which means DFS, BFS, and Dijkstra are mathematically forced to
+// return identical paths every time. Braiding adds a controlled number of
+// alternate routes so the algorithms can actually disagree: DFS may wander
+// down a longer branch, BFS will still find the fewest steps, and Dijkstra
+// will find the lowest-cost route (which can differ from BFS's once weights
+// are involved).
+const braidMaze = (grid, probability = 0.12) => {
+  const rows = grid.length;
+  const cols = grid[0].length;
+  for (let r = 1; r < rows - 1; r++) {
+    for (let c = 1; c < cols - 1; c++) {
+      if (!grid[r][c].isWall) continue;
+      const up = !grid[r - 1][c].isWall;
+      const down = !grid[r + 1][c].isWall;
+      const left = !grid[r][c - 1].isWall;
+      const right = !grid[r][c + 1].isWall;
+      const wouldCreateLoop = (up && down) || (left && right);
+      if (wouldCreateLoop && Math.random() < probability) {
+        grid[r][c].isWall = false;
+      }
+    }
+  }
+};
+
+const generateMaze = (rows, cols, startRow, startCol, isWeighted = false) => {
+  const grid = blankGrid(rows, cols);
+  const dirs = [[-2,0],[0,2],[2,0],[0,-2]];
+  const stack = [{ r: startRow, c: startCol }];
+  grid[startRow][startCol].isWall = false;
+
+  while (stack.length) {
+    const { r, c } = stack[stack.length - 1];
+    const shuffled = [...dirs].sort(() => Math.random() - 0.5);
+    let moved = false;
+    for (const [dr, dc] of shuffled) {
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc].isWall) {
+        grid[r + dr / 2][c + dc / 2].isWall = false;
+        grid[nr][nc].isWall = false;
+        stack.push({ r: nr, c: nc });
+        moved = true;
+        break;
+      }
+    }
+    if (!moved) stack.pop();
+  }
+
+  braidMaze(grid, 0.12);
+
+  if (isWeighted) applyWeights(grid);
+
+  grid[startRow][startCol].isStart = true;
+  const { r: er, c: ec } = bfsFurthest(grid, startRow, startCol);
+  grid[er][ec].isEnd = true;
+
+  return { maze: grid, start: { row: startRow, col: startCol }, end: { row: er, col: ec } };
+};
+
+const generateSpiralMaze = (rows, cols, isWeighted = false) => {
+  const grid = blankGrid(rows, cols);
+
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      grid[r][c].isWall = false;
+
+  for (let r = 0; r < rows; r++) { grid[r][0].isWall = true; grid[r][cols-1].isWall = true; }
+  for (let c = 0; c < cols; c++) { grid[0][c].isWall = true; grid[rows-1][c].isWall = true; }
+
+  let top = 2, bot = rows - 3, left = 2, right = cols - 3;
+  let side = 0;
+  while (top <= bot && left <= right) {
+    const gapFactor = 0.3 + Math.random() * 0.4;
+    if (side === 0) {
+      for (let c = left; c <= right; c++) grid[top][c].isWall = true;
+      const gap = Math.floor(left + (right - left) * gapFactor);
+      grid[top][gap].isWall = false;
+      top += 2; side = 1;
+    } else if (side === 1) {
+      for (let r = top; r <= bot; r++) grid[r][right].isWall = true;
+      const gap = Math.floor(top + (bot - top) * gapFactor);
+      grid[gap][right].isWall = false;
+      right -= 2; side = 2;
+    } else if (side === 2) {
+      for (let c = right; c >= left; c--) grid[bot][c].isWall = true;
+      const gap = Math.floor(left + (right - left) * gapFactor);
+      grid[bot][gap].isWall = false;
+      bot -= 2; side = 3;
+    } else {
+      for (let r = bot; r >= top; r--) grid[r][left].isWall = true;
+      const gap = Math.floor(top + (bot - top) * gapFactor);
+      grid[gap][left].isWall = false;
+      left += 2; side = 0;
+    }
+  }
+
+  // Rings only connect via a single gap each by default, which still leaves
+  // one forced route. Braid a few extra gaps into the rings so there are
+  // real alternate paths between rings.
+  braidMaze(grid, 0.08);
+
+  if (isWeighted) applyWeights(grid, 0.2);
+
+  const sr = 1, sc = 1;
+  grid[sr][sc].isWall = false;
+  grid[sr][sc].isStart = true;
+  const { r: er, c: ec } = bfsFurthest(grid, sr, sc);
+  grid[er][ec].isEnd = true;
+
+  return { maze: grid, start: { row: sr, col: sc }, end: { row: er, col: ec } };
+};
+
+const generateDivisionMaze = (rows, cols, isWeighted = false) => {
+  const grid = blankGrid(rows, cols);
+
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      grid[r][c].isWall = false;
+
+  for (let r = 0; r < rows; r++) { grid[r][0].isWall = true; grid[r][cols-1].isWall = true; }
+  for (let c = 0; c < cols; c++) { grid[0][c].isWall = true; grid[rows-1][c].isWall = true; }
+
+  const divide = (r1, c1, r2, c2) => {
+    const h = r2 - r1, w = c2 - c1;
+    if (h < 2 || w < 2) return;
+
+    const horizontal = h > w ? true : w > h ? false : Math.random() < 0.5;
+
+    if (horizontal) {
+
+      const wallRow = r1 + 2 * Math.floor(Math.random() * Math.floor(h / 2)) + 1;
+
+      const passCol = c1 + 2 * Math.floor(Math.random() * Math.ceil(w / 2));
+      for (let c = c1; c <= c2; c++) grid[wallRow][c].isWall = true;
+      if (passCol >= c1 && passCol <= c2) grid[wallRow][passCol].isWall = false;
+      divide(r1, c1, wallRow - 1, c2);
+      divide(wallRow + 1, c1, r2, c2);
+    } else {
+      const wallCol = c1 + 2 * Math.floor(Math.random() * Math.floor(w / 2)) + 1;
+      const passRow = r1 + 2 * Math.floor(Math.random() * Math.ceil(h / 2));
+      for (let r = r1; r <= r2; r++) grid[r][wallCol].isWall = true;
+      if (passRow >= r1 && passRow <= r2) grid[passRow][wallCol].isWall = false;
+      divide(r1, c1, r2, wallCol - 1);
+      divide(r1, wallCol + 1, r2, c2);
+    }
+  };
+
+  divide(1, 1, rows - 2, cols - 2);
+
+  // Each divider wall only has a single passage by default, which still
+  // forces one route per room boundary. Braid in extra passages so rooms
+  // have more than one way in/out, giving BFS and Dijkstra room to diverge.
+  braidMaze(grid, 0.08);
+
+  if (isWeighted) {
+    const midC = Math.floor(cols / 2);
+    for (let r = 1; r < rows - 1; r++)
+      for (let c = 1; c < cols - 1; c++)
+        if (!grid[r][c].isWall)
+          grid[r][c].weight = Math.abs(c - midC) < 4 && Math.random() < 0.6 ? 3 : 1;
+  }
+
+  const sr = 1, sc = 1;
+  grid[sr][sc].isStart = true;
+  const { r: er, c: ec } = bfsFurthest(grid, sr, sc);
+  grid[er][ec].isEnd = true;
+
+  return { maze: grid, start: { row: sr, col: sc }, end: { row: er, col: ec } };
+};
+
+const dfs = (grid, start, end) => {
+  const rows = grid.length, cols = grid[0].length;
+  const visited = Array(rows).fill(null).map(() => Array(cols).fill(false));
+  const prev = Array(rows).fill(null).map(() => Array(cols).fill(null));
   const stack = [start];
   const visitedNodesInOrder = [];
   const path = [];
 
-  while (stack.length > 0) {
-    const current = stack.pop();
+  while (stack.length) {
+    const cur = stack.pop();
+    if (visited[cur.row][cur.col]) continue;
+    visited[cur.row][cur.col] = true;
+    visitedNodesInOrder.push({ row: cur.row, col: cur.col });
+    if (cur.row === end.row && cur.col === end.col) break;
 
-    if (visited[current.row][current.col]) continue;
-
-    visited[current.row][current.col] = true;
-    visitedNodesInOrder.push({row: current.row, col: current.col});
-
-    if (current.row === end.row && current.col === end.col) {
-      break;
-    }
-
-    // Try directions in this order: right, down, up, left
     const neighbors = [
-      {row: current.row, col: current.col + 1},
-      {row: current.row + 1, col: current.col},
-      {row: current.row - 1, col: current.col},
-      {row: current.row, col: current.col - 1},
-    ];
-
-    // Filter valid neighbors
-    const validNeighbors = neighbors.filter(neighbor =>
-      neighbor.row >= 0 && neighbor.row < rows &&
-      neighbor.col >= 0 && neighbor.col < cols &&
-      !grid[neighbor.row][neighbor.col].isWall &&
-      !visited[neighbor.row][neighbor.col]
+      { row: cur.row - 1, col: cur.col },
+      { row: cur.row, col: cur.col - 1 },
+      { row: cur.row + 1, col: cur.col },
+      { row: cur.row, col: cur.col + 1 },
+    ].filter(
+      n =>
+        n.row >= 0 && n.row < rows &&
+        n.col >= 0 && n.col < cols &&
+        !grid[n.row][n.col].isWall &&
+        !visited[n.row][n.col]
     );
 
-    // Sort neighbors based on distance to exit (heuristic)
-    validNeighbors.sort((a, b) => {
-      const distA = Math.abs(a.row - end.row) + Math.abs(a.col - end.col);
-      const distB = Math.abs(b.row - end.row) + Math.abs(b.col - end.col);
-      return distA - distB;
-    });
-
-    for (const neighbor of validNeighbors) {
-      // BUG FIX: only record prev the first time a node is reached. Letting
-      // later iterations overwrite it could point the reconstructed path
-      // through a node that was never actually visited along that route.
-      if (prev[neighbor.row][neighbor.col] === null) {
-        prev[neighbor.row][neighbor.col] = {row: current.row, col: current.col};
-      }
-      stack.push(neighbor);
+    for (const n of neighbors) {
+      if (prev[n.row][n.col] === null)
+        prev[n.row][n.col] = { row: cur.row, col: cur.col };
+      stack.push(n);
     }
   }
 
-  // Reconstruct path
-  let current = end;
-  while (current && (current.row !== start.row || current.col !== start.col)) {
-    path.unshift(current);
-    current = prev[current.row][current.col];
+  let cur = end;
+  while (cur && !(cur.row === start.row && cur.col === start.col)) {
+    path.unshift(cur);
+    cur = prev[cur.row][cur.col];
   }
-  if (path.length > 0) {
-    path.unshift(start);
-  }
+  if (path.length) path.unshift(start);
 
-  return { visitedNodesInOrder, path };
+  const totalCost = path.reduce((sum, n) => sum + grid[n.row][n.col].weight, 0) - grid[start.row][start.col].weight;
+  return { visitedNodesInOrder, path, totalCost };
 };
 
-// BFS Algorithm for maze solving (unweighted)
 const bfs = (grid, start, end) => {
-  const rows = grid.length;
-  const cols = grid[0].length;
-  const visited = Array(rows).fill().map(() => Array(cols).fill(false));
-  const prev = Array(rows).fill().map(() => Array(cols).fill(null));
-  const queue = [start];
+  const rows = grid.length, cols = grid[0].length;
+  const visited = Array(rows).fill(null).map(() => Array(cols).fill(false));
+  const prev = Array(rows).fill(null).map(() => Array(cols).fill(null));
+  const q = [start];
   const visitedNodesInOrder = [];
   const path = [];
 
   visited[start.row][start.col] = true;
 
-  while (queue.length > 0) {
-    const current = queue.shift();
-    visitedNodesInOrder.push({row: current.row, col: current.col});
+  while (q.length) {
+    const cur = q.shift();
+    visitedNodesInOrder.push({ row: cur.row, col: cur.col });
+    if (cur.row === end.row && cur.col === end.col) break;
 
-    if (current.row === end.row && current.col === end.col) {
-      break;
-    }
-
-    const neighbors = [
-      {row: current.row - 1, col: current.col},
-      {row: current.row + 1, col: current.col},
-      {row: current.row, col: current.col - 1},
-      {row: current.row, col: current.col + 1},
-    ];
-
-    for (const neighbor of neighbors) {
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = cur.row + dr, nc = cur.col + dc;
       if (
-        neighbor.row >= 0 && neighbor.row < rows &&
-        neighbor.col >= 0 && neighbor.col < cols &&
-        !grid[neighbor.row][neighbor.col].isWall &&
-        !visited[neighbor.row][neighbor.col]
+        nr >= 0 && nr < rows && nc >= 0 && nc < cols &&
+        !grid[nr][nc].isWall && !visited[nr][nc]
       ) {
-        visited[neighbor.row][neighbor.col] = true;
-        prev[neighbor.row][neighbor.col] = {row: current.row, col: current.col};
-        queue.push(neighbor);
+        visited[nr][nc] = true;
+        prev[nr][nc] = { row: cur.row, col: cur.col };
+        q.push({ row: nr, col: nc });
       }
     }
   }
 
-  // Reconstruct path
-  let current = end;
-  while (current && (current.row !== start.row || current.col !== start.col)) {
-    path.unshift(current);
-    current = prev[current.row][current.col];
+  let cur = end;
+  while (cur && !(cur.row === start.row && cur.col === start.col)) {
+    path.unshift(cur);
+    cur = prev[cur.row][cur.col];
   }
-  if (path.length > 0) path.unshift(start);
+  if (path.length) path.unshift(start);
 
-  return { visitedNodesInOrder, path };
+  const totalCost = path.reduce((sum, n) => sum + grid[n.row][n.col].weight, 0) - grid[start.row][start.col].weight;
+  return { visitedNodesInOrder, path, totalCost };
 };
 
-// Dijkstra's Algorithm (weighted)
 const dijkstra = (grid, start, end) => {
-  const rows = grid.length;
-  const cols = grid[0].length;
-  const distances = Array(rows).fill().map(() => Array(cols).fill(Infinity));
-  const visited = Array(rows).fill().map(() => Array(cols).fill(false));
-  const prev = Array(rows).fill().map(() => Array(cols).fill(null));
+  const rows = grid.length, cols = grid[0].length;
+  const dist = Array(rows).fill(null).map(() => Array(cols).fill(Infinity));
+  const visited = Array(rows).fill(null).map(() => Array(cols).fill(false));
+  const prev = Array(rows).fill(null).map(() => Array(cols).fill(null));
   const visitedNodesInOrder = [];
   const path = [];
 
-  distances[start.row][start.col] = 0;
-  const unvisited = [{...start, distance: 0}];
+  dist[start.row][start.col] = 0;
 
-  while (unvisited.length > 0) {
-    unvisited.sort((a, b) => a.distance - b.distance);
-    const current = unvisited.shift();
+  const pq = [{ row: start.row, col: start.col, d: 0 }];
 
-    if (visited[current.row][current.col]) continue;
+  while (pq.length) {
+    pq.sort((a, b) => a.d - b.d);
+    const cur = pq.shift();
+    if (visited[cur.row][cur.col]) continue;
+    visited[cur.row][cur.col] = true;
+    visitedNodesInOrder.push({ row: cur.row, col: cur.col });
+    if (cur.row === end.row && cur.col === end.col) break;
 
-    visited[current.row][current.col] = true;
-    visitedNodesInOrder.push({row: current.row, col: current.col});
-
-    if (current.row === end.row && current.col === end.col) break;
-
-    const neighbors = [
-      {row: current.row - 1, col: current.col},
-      {row: current.row + 1, col: current.col},
-      {row: current.row, col: current.col - 1},
-      {row: current.row, col: current.col + 1},
-    ];
-
-    for (const neighbor of neighbors) {
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = cur.row + dr, nc = cur.col + dc;
       if (
-        neighbor.row >= 0 && neighbor.row < rows &&
-        neighbor.col >= 0 && neighbor.col < cols &&
-        !grid[neighbor.row][neighbor.col].isWall &&
-        !visited[neighbor.row][neighbor.col]
+        nr >= 0 && nr < rows && nc >= 0 && nc < cols &&
+        !grid[nr][nc].isWall && !visited[nr][nc]
       ) {
-        // KEY: Use the cell's weight, not just +1
-        const newDist = distances[current.row][current.col] +
-                       grid[neighbor.row][neighbor.col].weight;
-
-        if (newDist < distances[neighbor.row][neighbor.col]) {
-          distances[neighbor.row][neighbor.col] = newDist;
-          prev[neighbor.row][neighbor.col] = {row: current.row, col: current.col};
-          unvisited.push({...neighbor, distance: newDist});
+        const nd = dist[cur.row][cur.col] + grid[nr][nc].weight;
+        if (nd < dist[nr][nc]) {
+          dist[nr][nc] = nd;
+          prev[nr][nc] = { row: cur.row, col: cur.col };
+          pq.push({ row: nr, col: nc, d: nd });
         }
       }
     }
   }
 
-  // Reconstruct path
-  let current = end;
-  while (current && (current.row !== start.row || current.col !== start.col)) {
-    path.unshift(current);
-    current = prev[current.row][current.col];
+  let cur = end;
+  while (cur && !(cur.row === start.row && cur.col === start.col)) {
+    path.unshift(cur);
+    cur = prev[cur.row][cur.col];
   }
-  if (path.length > 0) path.unshift(start);
+  if (path.length) path.unshift(start);
 
-  // BUG FIX: read the total cost straight off the distances table instead of
-  // accumulating it cell-by-cell during the path animation. The animation
-  // loop runs on a timer, so accumulating there was prone to race conditions
-  // and off-by-one errors if the user navigated away mid-animation.
-  const totalCost = path.length > 0 ? distances[end.row][end.col] : 0;
-
-  return { visitedNodesInOrder, path, distances, totalCost };
+  const totalCost = path.length ? dist[end.row][end.col] : 0;
+  return { visitedNodesInOrder, path, distances: dist, totalCost };
 };
 
-// Grid Cell Component with weight display
-const GridCell = ({
-  cell,
-  isStart,
-  isEnd,
-  isWall,
-  isVisited,
-  isPath,
-  isCurrent,
-  distance,
-  weight,
-  onClick
-}) => {
-  return (
-    <div
-      onClick={onClick}
-      className={`
-        w-8 h-8 md:w-10 md:h-10 flex items-center justify-center
-        border transition-all duration-150 relative
-        ${isStart ? 'bg-green-500 hover:bg-green-600 border-green-600' :
-         isEnd ? 'bg-red-500 hover:bg-red-600 border-red-600' :
-         isWall ? 'bg-gray-900 hover:bg-gray-800 border-gray-800' :
-         isPath ? 'bg-yellow-500 animate-pulse border-yellow-600' :
-         isCurrent ? 'bg-blue-400 scale-105 border-blue-500' :
-         isVisited ? 'bg-blue-200 border-blue-300' :
-         weight > 1 ? 'bg-amber-100 border-amber-300 hover:bg-amber-200' :
-         'bg-gray-100 hover:bg-gray-200 border-gray-300'}
-        cursor-pointer rounded-sm
-        ${(isVisited || isPath || isCurrent) ? 'shadow-inner' : ''}
-        flex flex-col items-center justify-center
-      `}
-      title={weight > 1 ? `Cost to move here: ${weight}` : 'Cost to move here: 1'}
-    >
-      {/* Show weight badge if > 1 */}
-      {weight > 1 && !isStart && !isEnd && !isWall && (
-        <div className="absolute top-0 right-0 w-3 h-3 bg-amber-500 rounded-full text-[8px] font-bold text-white flex items-center justify-center">
-          {weight}
-        </div>
-      )}
+const GridCell = ({ cell, isStart, isEnd, isWall, isVisited, isPath, isCurrent, showDist, weight, onClick }) => (
+  <div
+    onClick={onClick}
+    title={weight > 1 ? `Cost: ${weight}` : "Cost: 1"}
+    className={`
+      w-8 h-8 md:w-10 md:h-10 flex items-center justify-center
+      border transition-all duration-150 relative cursor-pointer rounded-sm
+      ${isStart
+        ? "bg-green-500 border-green-600"
+        : isEnd
+        ? "bg-red-500 border-red-600"
+        : isWall
+        ? "bg-gray-900 border-gray-800 hover:bg-gray-700"
+        : isPath
+        ? "bg-yellow-400 border-yellow-500 animate-pulse"
+        : isCurrent
+        ? "bg-blue-400 scale-105 border-blue-500"
+        : isVisited
+        ? "bg-blue-200 border-blue-300"
+        : weight > 1
+        ? "bg-amber-100 border-amber-300 hover:bg-amber-200"
+        : "bg-gray-100 border-gray-300 hover:bg-gray-200"}
+    `}
+  >
+    {weight > 1 && !isStart && !isEnd && !isWall && (
+      <div className="absolute top-0 right-0 w-3 h-3 bg-amber-500 rounded-full text-[8px] font-bold text-white flex items-center justify-center">
+        {weight}
+      </div>
+    )}
+    {showDist !== Infinity && showDist !== undefined && showDist !== 0 && (
+      <span className="text-[9px] font-bold text-gray-600">{showDist}</span>
+    )}
+  </div>
+);
 
-      {/* Show distance for Dijkstra's */}
-      {distance !== Infinity && distance !== 0 && (
-        <span className="text-xs font-bold text-gray-700">
-          {distance}
-        </span>
-      )}
-    </div>
-  );
-};
-
-// Algorithm Comparison Table
 const AlgorithmComparison = ({ isWeighted }) => (
   <div className="mt-8 p-6 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
     <h3 className="text-xl font-bold text-gray-800 mb-4">When to Use Which Algorithm</h3>
@@ -366,230 +390,128 @@ const AlgorithmComparison = ({ isWeighted }) => (
       <table className="min-w-full bg-white rounded-lg overflow-hidden">
         <thead>
           <tr className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white">
-            <th className="p-3 text-left">Algorithm</th>
-            <th className="p-3 text-left">Graph Type</th>
-            <th className="p-3 text-left">Finds Shortest Path?</th>
-            <th className="p-3 text-left">Time Complexity</th>
-            <th className="p-3 text-left">Real-World Use</th>
+            {["Algorithm","Graph Type","Shortest Path?","Time Complexity","Real-World Use"].map(h => (
+              <th key={h} className="p-3 text-left">{h}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
           <tr className="border-b border-gray-200 hover:bg-gray-50">
             <td className="p-3 font-bold text-purple-600">DFS</td>
-            <td className="p-3">Unweighted</td>
-            <td className="p-3">
-              <span className="text-red-500">❌ No</span>
-              <div className="text-xs text-gray-500">Finds any path</div>
-            </td>
+            <td className="p-3">Any</td>
+            <td className="p-3"><span className="text-red-500">❌ No</span><div className="text-xs text-gray-500">Finds any path</div></td>
             <td className="p-3">O(V + E)</td>
-            <td className="p-3">Maze solving, cycle detection</td>
+            <td className="p-3">Cycle detection, topological sort</td>
           </tr>
           <tr className="border-b border-gray-200 hover:bg-gray-50">
             <td className="p-3 font-bold text-blue-600">BFS</td>
             <td className="p-3">Unweighted</td>
-            <td className="p-3">
-              <span className="text-green-500">✅ Yes</span>
-              <div className="text-xs text-gray-500">By number of steps</div>
-            </td>
+            <td className="p-3"><span className="text-green-500">✅ Yes</span><div className="text-xs text-gray-500">By step count</div></td>
             <td className="p-3">O(V + E)</td>
             <td className="p-3">Social networks, web crawling</td>
           </tr>
           <tr className="hover:bg-gray-50">
             <td className="p-3 font-bold text-emerald-600">Dijkstra's</td>
-            <td className="p-3">Weighted (non-negative)</td>
-            <td className="p-3">
-              <span className="text-green-500">✅ Yes</span>
-              <div className="text-xs text-gray-500">By total cost</div>
-            </td>
+            <td className="p-3">Weighted (non-neg)</td>
+            <td className="p-3"><span className="text-green-500">✅ Yes</span><div className="text-xs text-gray-500">By total cost</div></td>
             <td className="p-3">O((V+E) log V)</td>
             <td className="p-3">GPS navigation, network routing</td>
           </tr>
         </tbody>
       </table>
     </div>
-
-    <div className="mt-6 p-4 bg-gradient-to-r from-amber-50 to-yellow-50 border border-amber-200 rounded-lg">
-      <h4 className="font-bold text-amber-800 mb-2 flex items-center gap-2">
-        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-        </svg>
-        Key Insight: Weighted vs Unweighted
-      </h4>
-      <p className="text-amber-700">
+    <div className="mt-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+      <h4 className="font-bold text-amber-800 mb-2">💡 Key Insight: Weighted vs Unweighted</h4>
+      <p className="text-amber-700 text-sm">
         {isWeighted ? (
-          <>
-            <strong>Weighted Maze Active:</strong> Yellow cells cost 3x more to traverse.
-            <br />
-            <strong>BFS</strong> finds the path with fewest steps (ignoring weights).
-            <br />
-            <strong>Dijkstra's</strong> finds the path with lowest total cost (considering weights).
-          </>
+          <><strong>Weighted mode on.</strong> BFS finds fewest steps. Dijkstra finds lowest total cost — often a different route.</>
         ) : (
-          <>
-            <strong>Unweighted Maze:</strong> All moves cost the same (1).
-            <br />
-            <strong>BFS and Dijkstra's</strong> give the same result.
-            <br />
-            <strong>Dijkstra's</strong> is overkill here - use BFS for better performance.
-          </>
+          <><strong>Unweighted mode.</strong> BFS and Dijkstra produce identical paths (DFS may still differ — it doesn't search for the shortest route).</>
         )}
       </p>
     </div>
   </div>
 );
 
-// Speeds for the animation loop (ms per step)
 const SPEEDS = { Slow: 60, Normal: 20, Fast: 4 };
 
 export default function GraphPage() {
-  const ROWS = 19; // Odd number for better maze generation
-  const COLS = 29; // Odd number for better maze generation
+  const ROWS = 19;
+  const COLS = 29;
 
   const [grid, setGrid] = useState([]);
   const [isVisualizing, setIsVisualizing] = useState(false);
   const [algorithm, setAlgorithm] = useState("dijkstra");
-  const [visitedNodes, setVisitedNodes] = useState([]);
-  const [pathNodes, setPathNodes] = useState([]);
+  const [visitedSet, setVisitedSet] = useState(new Set());
+  const [pathSet, setPathSet] = useState(new Set());
   const [currentNode, setCurrentNode] = useState(null);
-  const [distances, setDistances] = useState([]);
+  const [distances, setDistances] = useState(null);
   const [startPos, setStartPos] = useState(null);
   const [endPos, setEndPos] = useState(null);
   const [isWeighted, setIsWeighted] = useState(true);
-  const [totalCost, setTotalCost] = useState(0);
+  const [totalCost, setTotalCost] = useState(null);
+  const [runResults, setRunResults] = useState({});
   const [noPathMsg, setNoPathMsg] = useState(false);
   const [speedLabel, setSpeedLabel] = useState("Normal");
+  const [mazeType, setMazeType] = useState("backtracker");
 
   const speedRef = useRef(SPEEDS["Normal"]);
-  const cancelRef = useRef(false); // lets us bail out of an in-flight animation
+  const cancelRef = useRef(false);
 
-  // Initialize with a weighted maze
-  useEffect(() => {
-    generateNewMaze(true);
-  }, []);
+  useEffect(() => { buildMaze("backtracker", true); }, []);
 
-  const generateNewMaze = (weighted = true) => {
-    if (isVisualizing) cancelRef.current = true; // cancel any in-flight run
+  const key = (r, c) => `${r},${c}`;
 
-    const centerRow = oddCenter(ROWS);
-    const centerCol = oddCenter(COLS);
+  const buildMaze = (type = mazeType, weighted = isWeighted) => {
 
-    const { maze, start, end } = generateMaze(ROWS, COLS, centerRow, centerCol, weighted);
+    cancelRef.current = true;
+    setIsVisualizing(false);
 
-    setGrid(maze);
-    setStartPos(start);
-    setEndPos(end);
+    let result;
+    const cr = oddCenter(ROWS), cc = oddCenter(COLS);
+
+    if (type === "backtracker") result = generateMaze(ROWS, COLS, cr, cc, weighted);
+    else if (type === "spiral")  result = generateSpiralMaze(ROWS, COLS, weighted);
+    else                          result = generateDivisionMaze(ROWS, COLS, weighted);
+
+    setGrid(result.maze);
+    setStartPos(result.start);
+    setEndPos(result.end);
+    setMazeType(type);
     setIsWeighted(weighted);
+    setRunResults({});
     resetVisualization();
   };
 
   const resetVisualization = () => {
     cancelRef.current = false;
-    setVisitedNodes([]);
-    setPathNodes([]);
+    setVisitedSet(new Set());
+    setPathSet(new Set());
     setCurrentNode(null);
-    setDistances(Array(ROWS).fill().map(() => Array(COLS).fill(Infinity)));
-    setTotalCost(0);
+    setDistances(null);
+    setTotalCost(null);
     setNoPathMsg(false);
-  };
-
-  const generateDarkMaze = () => {
-    if (isVisualizing) cancelRef.current = true;
-
-    const newGrid = Array(ROWS).fill().map((_, rowIdx) =>
-      Array(COLS).fill().map((_, colIdx) => ({
-        row: rowIdx,
-        col: colIdx,
-        isWall: true,
-        weight: isWeighted && Math.random() < 0.3 ? 3 : 1,
-        distance: Infinity
-      }))
-    );
-
-    // Create a few random paths
-    for (let i = 0; i < 80; i++) {
-      const row = Math.floor(Math.random() * ROWS);
-      const col = Math.floor(Math.random() * COLS);
-      newGrid[row][col].isWall = false;
-    }
-
-    // Set start in center, end at edge
-    const centerRow = Math.floor(ROWS / 2);
-    const centerCol = Math.floor(COLS / 2);
-    newGrid[centerRow][centerCol].isStart = true;
-    newGrid[centerRow][centerCol].isWall = false;
-
-    // Find edge cell for end
-    const edgeRow = Math.random() < 0.5 ? 0 : ROWS - 1;
-    const edgeCol = Math.floor(Math.random() * COLS);
-    newGrid[edgeRow][edgeCol].isEnd = true;
-    newGrid[edgeRow][edgeCol].isWall = false;
-
-    setGrid(newGrid);
-    setStartPos({ row: centerRow, col: centerCol });
-    setEndPos({ row: edgeRow, col: edgeCol });
-    resetVisualization();
-  };
-
-  const generateOpenMaze = () => {
-    if (isVisualizing) cancelRef.current = true;
-
-    const newGrid = Array(ROWS).fill().map((_, rowIdx) =>
-      Array(COLS).fill().map((_, colIdx) => ({
-        row: rowIdx,
-        col: colIdx,
-        isWall: false,
-        weight: isWeighted && Math.random() < 0.3 ? 3 : 1,
-        distance: Infinity
-      }))
-    );
-
-    // Add some random walls
-    for (let i = 0; i < 40; i++) {
-      const row = Math.floor(Math.random() * ROWS);
-      const col = Math.floor(Math.random() * COLS);
-      if (!newGrid[row][col].isStart && !newGrid[row][col].isEnd) {
-        newGrid[row][col].isWall = true;
-      }
-    }
-
-    // Set start and end
-    const centerRow = Math.floor(ROWS / 2);
-    const centerCol = Math.floor(COLS / 2);
-    newGrid[centerRow][centerCol].isStart = true;
-
-    const edgeRow = Math.random() < 0.5 ? 0 : ROWS - 1;
-    const edgeCol = Math.floor(Math.random() * COLS);
-    newGrid[edgeRow][edgeCol].isEnd = true;
-
-    setGrid(newGrid);
-    setStartPos({ row: centerRow, col: centerCol });
-    setEndPos({ row: edgeRow, col: edgeCol });
-    resetVisualization();
+    setIsVisualizing(false);
   };
 
   const handleCellClick = (row, col) => {
     if (isVisualizing) return;
+    const cell = grid[row][col];
+    if (cell.isStart || cell.isEnd) return;
 
-    const newGrid = [...grid];
-    if (!newGrid[row][col].isStart && !newGrid[row][col].isEnd) {
-      if (isWeighted) {
-        // Cycle through: normal → weighted → wall → normal
-        if (newGrid[row][col].isWall) {
-          newGrid[row][col].isWall = false;
-          newGrid[row][col].weight = 1;
-        } else if (newGrid[row][col].weight === 1) {
-          newGrid[row][col].weight = 3;
-        } else {
-          newGrid[row][col].isWall = true;
-        }
-      } else {
-        newGrid[row][col].isWall = !newGrid[row][col].isWall;
-      }
-      setGrid(newGrid);
-      // BUG FIX: editing the grid invalidates any path/visited cells already
-      // drawn from a previous run, so clear them instead of leaving stale state.
-      resetVisualization();
+    const newGrid = grid.map(r => r.map(c => ({ ...c })));
+    const c = newGrid[row][col];
+
+    if (isWeighted) {
+      if (c.isWall)        { c.isWall = false; c.weight = 1; }
+      else if (c.weight === 1) { c.weight = 3; }
+      else                 { c.isWall = true; c.weight = 1; }
+    } else {
+      c.isWall = !c.isWall;
     }
+
+    setGrid(newGrid);
+    resetVisualization();
   };
 
   const setSpeed = (label) => {
@@ -605,55 +527,51 @@ export default function GraphPage() {
     cancelRef.current = false;
 
     let result;
-    switch (algorithm) {
-      case "dfs":
-        result = dfs(grid, startPos, endPos);
-        break;
-      case "bfs":
-        result = bfs(grid, startPos, endPos);
-        break;
-      case "dijkstra":
-      default:
-        result = dijkstra(grid, startPos, endPos);
-        setDistances(result.distances);
-        break;
-    }
+    if (algorithm === "dfs")           result = dfs(grid, startPos, endPos);
+    else if (algorithm === "bfs")      result = bfs(grid, startPos, endPos);
+    else { result = dijkstra(grid, startPos, endPos); setDistances(result.distances); }
 
-    // Animate visited nodes
-    const visited = [];
+    const vSet = new Set();
     for (const node of result.visitedNodesInOrder) {
       if (cancelRef.current) { setIsVisualizing(false); return; }
-      visited.push(node);
+      vSet.add(key(node.row, node.col));
       setCurrentNode(node);
-      setVisitedNodes([...visited]);
-      await new Promise(resolve => setTimeout(resolve, speedRef.current));
+
+      setVisitedSet(new Set(vSet));
+      await new Promise(r => setTimeout(r, speedRef.current));
     }
     setCurrentNode(null);
 
-    if (result.path.length === 0) {
-      // BUG FIX: inline banner instead of a blocking alert() — alert() froze
-      // the animation state and could fire after the user navigated away.
+    if (!result.path.length) {
       setNoPathMsg(true);
       setIsVisualizing(false);
       return;
     }
 
-    // Animate path
-    const path = [];
+    const pSet = new Set();
     for (const node of result.path) {
       if (cancelRef.current) { setIsVisualizing(false); return; }
-      path.push(node);
-      setPathNodes([...path]);
-      await new Promise(resolve => setTimeout(resolve, speedRef.current * 2));
+      pSet.add(key(node.row, node.col));
+      setPathSet(new Set(pSet));
+      await new Promise(r => setTimeout(r, speedRef.current * 2));
     }
 
-    // BUG FIX: set the final cost once, after the animation is fully done,
-    // instead of accumulating it step-by-step inside the loop above.
-    const cost = algorithm === "dijkstra" ? result.totalCost : result.path.length - 1;
-    setTotalCost(cost);
-
+    setTotalCost(result.totalCost);
+    setRunResults(prev => ({
+      ...prev,
+      [algorithm]: { steps: result.path.length - 1, cost: result.totalCost }
+    }));
     setIsVisualizing(false);
   };
+
+  const distMap = useMemo(() => {
+    if (!distances) return null;
+    const m = new Map();
+    for (let r = 0; r < ROWS; r++)
+      for (let c = 0; c < COLS; c++)
+        if (distances[r][c] !== Infinity) m.set(key(r, c), distances[r][c]);
+    return m;
+  }, [distances]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-blue-50">
@@ -662,128 +580,122 @@ export default function GraphPage() {
       <div className="container mx-auto px-4 py-8">
         <div className="mb-8 text-center">
           <h1 className="text-4xl font-bold text-gray-800 mb-2">
-            Weighted Maze Algorithm Visualizer
+            Maze Algorithm Visualizer
           </h1>
           <p className="text-gray-600">
-            See how different algorithms handle weighted vs unweighted paths
+            Compare DFS, BFS, and Dijkstra's on structured mazes
           </p>
         </div>
 
-        {/* Maze Type Toggle */}
-        <div className="mb-8">
-          <div className="flex flex-col items-center gap-4 mb-6">
-            <div className="flex items-center gap-4 bg-white p-4 rounded-xl shadow-sm">
-              <span className="text-gray-700 font-medium">Maze Type:</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => generateNewMaze(false)}
-                  className={`px-4 py-2 rounded-lg transition-all ${!isWeighted
-                    ? 'bg-blue-500 text-white shadow-md'
-                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-                  disabled={isVisualizing}
-                >
-                  Unweighted
-                </button>
-                <button
-                  onClick={() => generateNewMaze(true)}
-                  className={`px-4 py-2 rounded-lg transition-all ${isWeighted
-                    ? 'bg-amber-500 text-white shadow-md'
-                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-                  disabled={isVisualizing}
-                >
-                  Weighted
-                </button>
-              </div>
-            </div>
-
-            {/* Speed control */}
-            <div className="flex items-center gap-4 bg-white p-4 rounded-xl shadow-sm">
-              <span className="text-gray-700 font-medium">Speed:</span>
-              <div className="flex gap-2">
-                {Object.keys(SPEEDS).map(label => (
-                  <button
-                    key={label}
-                    onClick={() => setSpeed(label)}
-                    className={`px-4 py-2 rounded-lg transition-all ${speedLabel === label
-                      ? 'bg-indigo-500 text-white shadow-md'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {isWeighted && (
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg max-w-2xl">
-                <div className="flex items-center gap-2 text-amber-800">
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                  </svg>
-                  <span><strong>Weighted Maze Active:</strong> Yellow cells (⚫) cost 3x more to traverse!</span>
-                </div>
-                <div className="mt-2 text-amber-700 text-sm">
-                  Watch how BFS finds a path with fewest steps, while Dijkstra's finds the path with lowest total cost.
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Algorithm Selection */}
-        <div className="mb-8">
-          <div className="flex flex-wrap justify-center gap-4 mb-6">
+        {/* Maze Type + Weighted Toggle */}
+        <div className="flex flex-col items-center gap-4 mb-6">
+          {/* Maze picker */}
+          <div className="flex items-center gap-4 bg-white p-4 rounded-xl shadow-sm flex-wrap justify-center">
+            <span className="text-gray-700 font-medium">Maze:</span>
             {[
-              {id: "dfs", name: "DFS", color: "from-purple-500 to-pink-500", ring: "ring-purple-200"},
-              {id: "bfs", name: "BFS", color: "from-blue-500 to-cyan-500", ring: "ring-blue-200"},
-              {id: "dijkstra", name: "Dijkstra", color: "from-emerald-500 to-teal-500", ring: "ring-emerald-200"}
-            ].map((algo) => (
+              { id: "backtracker", label: "Recursive Backtracker", desc: "Classic perfect maze, braided with extra loops" },
+              { id: "spiral",      label: "Spiral",                desc: "Concentric rings with braided shortcuts — shows DFS vs BFS starkly" },
+              { id: "division",    label: "Room Division",         desc: "Rooms + corridors — best for Dijkstra vs BFS" },
+            ].map(m => (
               <button
-                key={algo.id}
-                onClick={() => setAlgorithm(algo.id)}
+                key={m.id}
+                onClick={() => buildMaze(m.id, isWeighted)}
                 disabled={isVisualizing}
-                className={`
-                  px-6 py-3 rounded-lg font-bold text-white
-                  transition-all duration-200 shadow-md
-                  ${algorithm === algo.id
-                    ? 'ring-4 ring-opacity-50 scale-105'
-                    : 'opacity-90 hover:opacity-100 hover:scale-102'
-                  }
-                  ${isVisualizing ? 'cursor-not-allowed' : ''}
-                  bg-gradient-to-r ${algo.color} ${algo.ring}
-                `}
+                title={m.desc}
+                className={`px-4 py-2 rounded-lg transition-all text-sm ${
+                  mazeType === m.id
+                    ? "bg-blue-500 text-white shadow-md"
+                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                }`}
               >
-                {algo.name}
+                {m.label}
               </button>
             ))}
           </div>
+
+          {/* Weighted toggle */}
+          <div className="flex items-center gap-4 bg-white p-4 rounded-xl shadow-sm">
+            <span className="text-gray-700 font-medium">Terrain:</span>
+            <button
+              onClick={() => buildMaze(mazeType, false)}
+              disabled={isVisualizing}
+              className={`px-4 py-2 rounded-lg transition-all ${!isWeighted ? "bg-blue-500 text-white shadow-md" : "bg-gray-200 text-gray-700 hover:bg-gray-300"}`}
+            >
+              Unweighted
+            </button>
+            <button
+              onClick={() => buildMaze(mazeType, true)}
+              disabled={isVisualizing}
+              className={`px-4 py-2 rounded-lg transition-all ${isWeighted ? "bg-amber-500 text-white shadow-md" : "bg-gray-200 text-gray-700 hover:bg-gray-300"}`}
+            >
+              Weighted
+            </button>
+          </div>
+
+          {/* Speed picker */}
+          <div className="flex items-center gap-4 bg-white p-4 rounded-xl shadow-sm">
+            <span className="text-gray-700 font-medium">Speed:</span>
+            {Object.keys(SPEEDS).map(label => (
+              <button
+                key={label}
+                onClick={() => setSpeed(label)}
+                className={`px-4 py-2 rounded-lg transition-all ${speedLabel === label ? "bg-indigo-500 text-white shadow-md" : "bg-gray-200 text-gray-700 hover:bg-gray-300"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {isWeighted && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg max-w-2xl text-sm text-amber-800">
+              <strong>Weighted mode on:</strong> amber cells cost 3× to traverse.
+              Try <em>Room Division + Weighted</em> to see BFS and Dijkstra take different paths.
+            </div>
+          )}
         </div>
 
-        {/* Controls */}
+        {/* Algorithm Selection */}
+        <div className="flex flex-wrap justify-center gap-4 mb-6">
+          {[
+            { id: "dfs",      name: "DFS",     grad: "from-purple-500 to-pink-500",    ring: "ring-purple-300" },
+            { id: "bfs",      name: "BFS",     grad: "from-blue-500 to-cyan-500",      ring: "ring-blue-300"   },
+            { id: "dijkstra", name: "Dijkstra",grad: "from-emerald-500 to-teal-500",   ring: "ring-emerald-300"},
+          ].map(a => (
+            <button
+              key={a.id}
+              onClick={() => setAlgorithm(a.id)}
+              disabled={isVisualizing}
+              className={`
+                px-6 py-3 rounded-lg font-bold text-white shadow-md
+                transition-all duration-200 bg-gradient-to-r ${a.grad}
+                ${algorithm === a.id ? `ring-4 ring-opacity-50 scale-105 ${a.ring}` : "opacity-90 hover:opacity-100"}
+                ${isVisualizing ? "cursor-not-allowed" : ""}
+              `}
+            >
+              {a.name}
+            </button>
+          ))}
+        </div>
+
+        {/* Action Buttons */}
         <div className="flex flex-wrap gap-4 mb-6 p-4 bg-gradient-to-r from-gray-50 to-blue-50 rounded-xl shadow-sm">
           <button
             onClick={solveMaze}
             disabled={isVisualizing}
-            className={`
-              px-6 py-3 rounded-lg font-bold text-white shadow-md
-              transition-all duration-200 flex items-center gap-2
-              ${isVisualizing
-                ? 'bg-gray-400 cursor-not-allowed'
-                : 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600'
-              }
-            `}
+            className={`px-6 py-3 rounded-lg font-bold text-white shadow-md transition-all flex items-center gap-2
+              ${isVisualizing ? "bg-gray-400 cursor-not-allowed" : "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600"}`}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-            Visualize {algorithm === 'dfs' ? 'DFS' : algorithm === 'bfs' ? 'BFS' : 'Dijkstra'}
+            Visualize {algorithm === "dfs" ? "DFS" : algorithm === "bfs" ? "BFS" : "Dijkstra"}
           </button>
 
           <button
             onClick={resetVisualization}
             disabled={isVisualizing}
-            className="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold rounded-lg shadow-md transition-all duration-200 flex items-center gap-2 disabled:cursor-not-allowed"
+            className="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold rounded-lg shadow-md transition-all flex items-center gap-2 disabled:cursor-not-allowed"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -792,84 +704,48 @@ export default function GraphPage() {
           </button>
 
           <button
-            onClick={() => generateNewMaze(isWeighted)}
+            onClick={() => buildMaze(mazeType, isWeighted)}
             disabled={isVisualizing}
-            className="px-6 py-3 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white font-bold rounded-lg shadow-md transition-all duration-200 flex items-center gap-2"
+            className="px-6 py-3 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white font-bold rounded-lg shadow-md transition-all flex items-center gap-2"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
             New Maze
           </button>
-
-          <button
-            onClick={generateDarkMaze}
-            disabled={isVisualizing}
-            className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-bold rounded-lg shadow-md transition-all duration-200 flex items-center gap-2"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-            </svg>
-            Dark Maze
-          </button>
-
-          <button
-            onClick={generateOpenMaze}
-            disabled={isVisualizing}
-            className="px-6 py-3 bg-gradient-to-r from-orange-500 to-yellow-500 hover:from-orange-600 hover:to-yellow-600 text-white font-bold rounded-lg shadow-md transition-all duration-200 flex items-center gap-2"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4 4 0 003 15z" />
-            </svg>
-            Open Maze
-          </button>
         </div>
 
-        {/* No-path banner (replaces the old blocking alert) */}
+        {/* No-path banner */}
         {noPathMsg && (
           <div className="mb-6 p-4 bg-rose-50 border border-rose-200 rounded-lg flex items-center gap-2 text-rose-700">
             <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
             </svg>
-            <span><strong>No path found!</strong> The mouse can't reach the cheese. Try generating a new maze.</span>
+            <span><strong>No path found!</strong> The maze has no route from start to end. Generate a new maze.</span>
           </div>
         )}
 
-        {/* Maze Grid */}
+        {/* Grid */}
         <div className="mb-8">
           <div className="bg-gray-900 rounded-xl shadow-2xl p-2 md:p-4 overflow-auto">
             <div className="flex justify-center">
-              <div
-                className="grid gap-0.5"
-                style={{
-                  gridTemplateColumns: `repeat(${COLS}, minmax(0, 1fr))`
-                }}
-              >
-                {grid.map((row, rowIdx) =>
-                  row.map((cell, colIdx) => {
-                    const isVisited = visitedNodes.some(
-                      node => node.row === rowIdx && node.col === colIdx
-                    );
-                    const isPath = pathNodes.some(
-                      node => node.row === rowIdx && node.col === colIdx
-                    );
-                    const isCurrent = currentNode &&
-                      currentNode.row === rowIdx &&
-                      currentNode.col === colIdx;
-
+              <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${COLS}, minmax(0, 1fr))` }}>
+                {grid.map((row, ri) =>
+                  row.map((cell, ci) => {
+                    const k = key(ri, ci);
                     return (
                       <GridCell
-                        key={`${rowIdx}-${colIdx}`}
+                        key={k}
                         cell={cell}
                         isStart={cell.isStart}
                         isEnd={cell.isEnd}
                         isWall={cell.isWall}
-                        isVisited={isVisited}
-                        isPath={isPath}
-                        isCurrent={isCurrent}
-                        distance={distances[rowIdx]?.[colIdx]}
+                        isVisited={visitedSet.has(k)}
+                        isPath={pathSet.has(k)}
+                        isCurrent={currentNode?.row === ri && currentNode?.col === ci}
+                        showDist={distMap?.get(k)}
                         weight={cell.weight}
-                        onClick={() => handleCellClick(rowIdx, colIdx)}
+                        onClick={() => handleCellClick(ri, ci)}
                       />
                     );
                   })
@@ -879,74 +755,119 @@ export default function GraphPage() {
           </div>
 
           {/* Stats */}
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="mt-6 grid grid-cols-2 md:grid-cols-3 gap-4">
             <div className="p-4 bg-gradient-to-br from-emerald-50 to-green-50 rounded-xl border border-emerald-100">
-              <div className="text-2xl font-bold text-emerald-700">{visitedNodes.length}</div>
+              <div className="text-2xl font-bold text-emerald-700">{visitedSet.size || "—"}</div>
               <div className="text-sm text-emerald-600">Cells Explored</div>
             </div>
             <div className="p-4 bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl border border-blue-100">
-              <div className="text-2xl font-bold text-blue-700">{pathNodes.length}</div>
-              <div className="text-sm text-blue-600">Path Length</div>
+              <div className="text-2xl font-bold text-blue-700">{totalCost !== null ? pathSet.size - 1 : "—"}</div>
+              <div className="text-sm text-blue-600">Steps in Path</div>
             </div>
             <div className="p-4 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-xl border border-amber-100">
-              <div className="text-2xl font-bold text-amber-700">
-                {totalCost}
-              </div>
-              <div className="text-sm text-amber-600">
-                {algorithm === 'dijkstra' ? 'Total Cost' : 'Steps'}
-              </div>
-            </div>
-            <div className="p-4 bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl border border-purple-100">
-              <div className="text-2xl font-bold text-purple-700">
-                {algorithm === 'dfs' ? 'DFS' :
-                 algorithm === 'bfs' ? 'BFS' :
-                 'Dijkstra'}
-              </div>
-              <div className="text-sm text-purple-600">Algorithm</div>
+              <div className="text-2xl font-bold text-amber-700">{totalCost !== null ? totalCost : "—"}</div>
+              <div className="text-sm text-amber-600">Weighted Cost</div>
             </div>
           </div>
-        </div>
 
-        {/* Algorithm Comparison */}
+          {/* Cross-algorithm comparison — appears after at least one run */}
+          {Object.keys(runResults).length > 0 && (
+            <div className="mt-4 p-4 bg-white rounded-xl border border-gray-200 shadow-sm">
+              <div className="text-sm font-semibold text-gray-600 mb-3">
+                Algorithm Comparison — same maze
+                <span className="ml-2 text-xs font-normal text-gray-400">(run all 3 to compare)</span>
+              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-gray-500 text-xs border-b border-gray-100">
+                    <th className="text-left pb-2 font-medium">Algorithm</th>
+                    <th className="text-right pb-2 font-medium">Steps</th>
+                    <th className="text-right pb-2 font-medium">Weighted Cost</th>
+                    <th className="text-right pb-2 font-medium"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { id: "dfs",      label: "DFS",      color: "text-purple-600", note: "any valid path" },
+                    { id: "bfs",      label: "BFS",      color: "text-blue-600",   note: "fewest steps"   },
+                    { id: "dijkstra", label: "Dijkstra", color: "text-emerald-600",note: "lowest cost"    },
+                  ].map(({ id, label, color, note }) => {
+                    const r = runResults[id];
+                    const minCost = Math.min(...Object.values(runResults).map(x => x.cost));
+                    const minSteps = Math.min(...Object.values(runResults).map(x => x.steps));
+                    const isCurrentAlgo = id === algorithm;
+                    return (
+                      <tr key={id} className={`border-b border-gray-50 ${isCurrentAlgo ? "bg-gray-50" : ""}`}>
+                        <td className={`py-2 font-bold ${color}`}>
+                          {label}
+                          <div className="text-[10px] font-normal text-gray-400">{note}</div>
+                          {isCurrentAlgo && <span className="ml-1 text-xs text-gray-400">(current)</span>}
+                        </td>
+                        <td className="text-right py-2 tabular-nums">
+                          {r ? (
+                            <span className={r.steps === minSteps && Object.keys(runResults).length > 1 ? "font-bold text-blue-600" : "text-gray-700"}>
+                              {r.steps}
+                              {r.steps === minSteps && Object.keys(runResults).length > 1 && " ✓"}
+                            </span>
+                          ) : <span className="text-gray-300">—</span>}
+                        </td>
+                        <td className="text-right py-2 tabular-nums">
+                          {r ? (
+                            <span className={r.cost === minCost && Object.keys(runResults).length > 1 ? "font-bold text-emerald-600" : "text-gray-700"}>
+                              {r.cost}
+                              {r.cost === minCost && Object.keys(runResults).length > 1 && " ✓"}
+                            </span>
+                          ) : <span className="text-gray-300">—</span>}
+                        </td>
+                        <td className="text-right py-2 text-xs text-gray-400 pl-2">
+                          {r && r.cost === minCost && r.steps !== minSteps && Object.keys(runResults).length > 1
+                            ? "lowest cost"
+                            : r && r.steps === minSteps && r.cost !== minCost && Object.keys(runResults).length > 1
+                            ? "fewest steps"
+                            : ""}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {Object.keys(runResults).length === 3 &&
+                (!isWeighted || Object.values(runResults).every(x => x.cost === Object.values(runResults)[0].cost)) && (
+                  <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                    {!isWeighted
+                      ? "Unweighted maze: all cells cost 1, so BFS and Dijkstra always tie on cost. If DFS also matches here, generate a new maze — braiding adds loops randomly, so some mazes have more alternate routes than others."
+                      : "All algorithms found equal cost on this maze. Try a new Room Division maze with Weighted mode — the center cost band forces Dijkstra to take a different route."}
+                  </p>
+                )}
+            </div>
+          )}
+
         <AlgorithmComparison isWeighted={isWeighted} />
 
         {/* Legend */}
         <div className="mt-8 p-6 bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl border border-gray-200">
           <h3 className="text-xl font-bold text-gray-800 mb-4">Legend</h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="flex items-center gap-3 p-3 bg-white rounded-lg">
-              <div className="w-8 h-8 rounded bg-green-500"></div>
-              <div>
-                <div className="font-bold text-gray-700">Start</div>
-                <div className="text-sm text-gray-500">Mouse position</div>
+            {[
+              { bg: "bg-green-500",                label: "Start",         sub: "Source node" },
+              { bg: "bg-red-500",                  label: "End",           sub: "Target node" },
+              { bg: "bg-amber-100 border relative",label: "Weighted Cell", sub: "Costs 3 to enter", dot: true },
+              { bg: "bg-yellow-400 animate-pulse", label: "Shortest Path", sub: "Solution route" },
+            ].map(({ bg, label, sub, dot }) => (
+              <div key={label} className="flex items-center gap-3 p-3 bg-white rounded-lg">
+                <div className={`w-8 h-8 rounded ${bg} flex-shrink-0 relative`}>
+                  {dot && <div className="absolute top-0 right-0 w-3 h-3 bg-amber-500 rounded-full" />}
+                </div>
+                <div>
+                  <div className="font-bold text-gray-700">{label}</div>
+                  <div className="text-sm text-gray-500">{sub}</div>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-3 p-3 bg-white rounded-lg">
-              <div className="w-8 h-8 rounded bg-red-500"></div>
-              <div>
-                <div className="font-bold text-gray-700">End</div>
-                <div className="text-sm text-gray-500">Cheese position</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 p-3 bg-white rounded-lg">
-              <div className="w-8 h-8 rounded bg-amber-100 relative">
-                <div className="absolute top-0 right-0 w-3 h-3 bg-amber-500 rounded-full"></div>
-              </div>
-              <div>
-                <div className="font-bold text-gray-700">Weighted Cell</div>
-                <div className="text-sm text-gray-500">Costs 3 to traverse</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 p-3 bg-white rounded-lg">
-              <div className="w-8 h-8 rounded bg-yellow-500 animate-pulse"></div>
-              <div>
-                <div className="font-bold text-gray-700">Shortest Path</div>
-                <div className="text-sm text-gray-500">Found solution</div>
-              </div>
-            </div>
+            ))}
           </div>
         </div>
       </div>
+    </div>
     </div>
   );
 }

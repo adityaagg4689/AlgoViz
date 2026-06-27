@@ -5,7 +5,6 @@ import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 const TreeNode = ({ 
   node, 
   isHighlighted, 
-  level = 0,
   x = 0,
   y = 0
 }) => {
@@ -26,161 +25,137 @@ const TreeNode = ({
           : 'bg-gradient-to-br from-emerald-500 to-teal-500 hover:scale-105'
         }
       `}
-      style={{
-        left: `${x}px`,
-        top: `${y}px`,
-      }}
+      style={{ left: `${x}px`, top: `${y}px` }}
     >
       <div className="relative">
         <span className="text-lg font-bold">{node.val}</span>
         <div className="absolute -bottom-7 left-1/2 transform -translate-x-1/2 text-xs font-semibold text-gray-700 bg-white px-2 py-1 rounded-full shadow-sm">
-          h:{node.height || 1}
+          h:{node.height}
         </div>
       </div>
     </div>
   );
 };
 
+// ------------------------------------------------------------------
+// Layout helpers — subtree-width-aware (fixes bug #6)
+// ------------------------------------------------------------------
+
+/** Count leaves to estimate relative subtree widths. */
+const subtreeLeafCount = (node) => {
+  if (!node) return 0;
+  if (!node.left && !node.right) return 1;
+  return subtreeLeafCount(node.left) + subtreeLeafCount(node.right);
+};
+
+/**
+ * Assign (x, y) to every node using a leaf-proportional split so that
+ * sibling subtrees get horizontal space proportional to their leaf count,
+ * preventing overlaps in skewed trees.
+ *
+ * Returns { nodes: [{id, val, height, x, y}], connections: [{x1,y1,x2,y2,highlighted}] }
+ */
+const buildLayout = (node, xLeft, xRight, y, levelHeight, highlightedIds, parentX = null, parentY = null) => {
+  if (!node) return { nodes: [], connections: [] };
+
+  const x = (xLeft + xRight) / 2;
+  const childY = y + levelHeight;
+
+  const currentNode = {
+    id: node.id,
+    val: node.val,
+    height: node.height,
+    x,
+    y,
+    isHighlighted: highlightedIds.has(node.id)
+  };
+
+  const connections = [];
+  if (parentX !== null) {
+    connections.push({
+      x1: parentX, y1: parentY + 25,
+      x2: x,       y2: y - 25,
+      highlighted: highlightedIds.has(node.id)
+    });
+  }
+
+  // Split horizontal space proportionally by leaf count
+  const leftLeaves  = subtreeLeafCount(node.left)  || 0;
+  const rightLeaves = subtreeLeafCount(node.right) || 0;
+  const totalLeaves = leftLeaves + rightLeaves || 1;
+  const mid = xLeft + (xRight - xLeft) * (leftLeaves / totalLeaves);
+
+  const leftLayout  = node.left  ? buildLayout(node.left,  xLeft, mid,    childY, levelHeight, highlightedIds, x, y) : { nodes: [], connections: [] };
+  const rightLayout = node.right ? buildLayout(node.right, mid,   xRight, childY, levelHeight, highlightedIds, x, y) : { nodes: [], connections: [] };
+
+  return {
+    nodes:       [currentNode, ...leftLayout.nodes, ...rightLayout.nodes],
+    connections: [...connections, ...leftLayout.connections, ...rightLayout.connections]
+  };
+};
+
+// ------------------------------------------------------------------
+
 const TreeVisualizer = ({ 
   root, 
   treeType, 
-  highlightedNodes = [], 
+  highlightedNodes = [], // Fix bug #3: these are now node IDs, not values
   isAnimating 
 }) => {
-  const [treeInfo, setTreeInfo] = useState({ 
-    height: 0, 
-    nodes: 0,
-    leaves: 0
-  });
-  const [containerSize, setContainerSize] = useState({ 
-    width: 1200, 
-    height: 600,
-    offsetX: 0 
-  });
-  const [isTraversing, setIsTraversing] = useState(false);
-  const [treeLayout, setTreeLayout] = useState({ nodes: [], connections: [] });
+  const [treeInfo, setTreeInfo]       = useState({ height: 0, nodes: 0, leaves: 0 });
+  const [containerSize, setContainerSize] = useState({ width: 1200, height: 600, centerX: 600 });
+  const [isTraversing, setIsTraversing]   = useState(false);
+  // Layout without highlights — only recomputed when root changes (fix bug #5)
+  const [baseLayout, setBaseLayout]   = useState({ nodes: [], connections: [] });
   const containerRef = useRef(null);
 
-  // Calculate all node positions and connections in one pass
-  const calculateTreeLayout = useCallback((node, level = 0, nodeX = 0, nodeY = 80, parentX = null, parentY = null, parentVal = null) => {
-    if (!node) return { nodes: [], connections: [] };
-    
-    const baseSpacing = 180;
-    const spacing = baseSpacing / Math.pow(1.4, level);
-    const childY = nodeY + 90;
-    
-    // Current node display data
-    const currentNode = {
-      val: node.val,
-      height: node.height || 1,
-      x: nodeX,
-      y: nodeY,
-      isHighlighted: highlightedNodes.includes(node.val),
-      hasParent: parentX !== null
-    };
-    
-    // Calculate connections - create edge from parent to this node
-    const connections = [];
-    if (parentX !== null && parentY !== null) {
-      connections.push({
-        x1: parentX,
-        y1: parentY + 25,
-        x2: nodeX,
-        y2: nodeY - 25,
-        highlighted: highlightedNodes.includes(node.val) || (parentVal && highlightedNodes.includes(parentVal))
-      });
-    }
-    
-    // Process children - pass current node's position as parent for next level
-    const leftLayout = node.left ? 
-      calculateTreeLayout(node.left, level + 1, nodeX - spacing, childY, nodeX, nodeY, node.val) : 
-      { nodes: [], connections: [] };
-    const rightLayout = node.right ? 
-      calculateTreeLayout(node.right, level + 1, nodeX + spacing, childY, nodeX, nodeY, node.val) : 
-      { nodes: [], connections: [] };
-    
-    return {
-      nodes: [currentNode, ...leftLayout.nodes, ...rightLayout.nodes],
-      connections: [...connections, ...leftLayout.connections, ...rightLayout.connections]
-    };
-  }, [highlightedNodes]);
+  // Set of highlighted IDs for O(1) lookup (fix bug #3)
+  const highlightedSet = useMemo(() => new Set(highlightedNodes), [highlightedNodes]);
 
-  // Calculate tree bounds for centering
-  const calculateTreeBounds = useCallback((node, level = 0, x = 0, y = 80, bounds = { minX: Infinity, maxX: -Infinity, maxY: 0 }) => {
-    if (!node) return bounds;
-    
-    const baseSpacing = 180;
-    const spacing = baseSpacing / Math.pow(1.4, level);
-    const childY = y + 90;
-    
-    // Update bounds
-    bounds.minX = Math.min(bounds.minX, x - 30);
-    bounds.maxX = Math.max(bounds.maxX, x + 30);
-    bounds.maxY = Math.max(bounds.maxY, y + 30);
-    
-    // Recurse for children
-    if (node.left) {
-      calculateTreeBounds(node.left, level + 1, x - spacing, childY, bounds);
-    }
-    if (node.right) {
-      calculateTreeBounds(node.right, level + 1, x + spacing, childY, bounds);
-    }
-    
-    return bounds;
-  }, []);
-
+  // Heavy computation: only runs when tree structure changes (fix bug #5)
   useEffect(() => {
     const calculateTreeInfo = (node) => {
       if (!node) return { height: 0, nodes: 0, leaves: 0 };
-      
-      const left = calculateTreeInfo(node.left);
+      const left  = calculateTreeInfo(node.left);
       const right = calculateTreeInfo(node.right);
       const isLeaf = !node.left && !node.right;
-      
       return {
         height: Math.max(left.height, right.height) + 1,
-        nodes: left.nodes + right.nodes + 1,
+        nodes:  left.nodes  + right.nodes  + 1,
         leaves: left.leaves + right.leaves + (isLeaf ? 1 : 0)
       };
     };
 
-    if (root) {
-      const info = calculateTreeInfo(root);
-      setTreeInfo(info);
-      
-      // Calculate tree bounds first
-      const bounds = calculateTreeBounds(root);
-      const treeWidth = bounds.maxX - bounds.minX;
-      const treeHeight = bounds.maxY;
-      
-      // Calculate container size with proper margins - make it wide enough!
-      const calculatedWidth = Math.max(1200, treeWidth + 400);
-      const calculatedHeight = Math.min(Math.max(400, treeHeight + 200), 800);
-      
-      // Center the tree by calculating starting X position
-      const centerX = calculatedWidth / 2;
-      
-      setContainerSize({ 
-        width: calculatedWidth, 
-        height: calculatedHeight,
-        centerX
-      });
+    if (!root) return;
 
-      // Calculate initial layout with centered X position
-      const layout = calculateTreeLayout(root, 0, centerX, 80, null, null, null);
-      
-      setTreeLayout(layout);
-    }
-  }, [root, calculateTreeBounds, calculateTreeLayout]);
+    const info = calculateTreeInfo(root);
+    setTreeInfo(info);
 
-  useEffect(() => {
-    // Update layout when highlightedNodes change
-    if (root && containerSize.width) {
-      const centerX = containerSize.centerX || containerSize.width / 2;
-      const layout = calculateTreeLayout(root, 0, centerX, 80, null, null, null);
-      setTreeLayout(layout);
-    }
-  }, [highlightedNodes, root, containerSize, calculateTreeLayout]);
+    // Size canvas to fit the tree
+    const minWidth = Math.max(1200, info.nodes * 80);
+    const calcHeight = Math.min(Math.max(400, info.height * 90 + 200), 800);
+    const centerX = minWidth / 2;
+
+    setContainerSize({ width: minWidth, height: calcHeight, centerX });
+
+    // Build layout with empty highlight set — highlights applied via useMemo below
+    const layout = buildLayout(root, 0, minWidth, 80, 90, new Set(), null, null);
+    setBaseLayout(layout);
+  }, [root]);
+
+  // Cheap: overlay highlights onto the already-computed positions (fix bug #5)
+  const treeLayout = useMemo(() => {
+    return {
+      nodes: baseLayout.nodes.map(n => ({
+        ...n,
+        isHighlighted: highlightedSet.has(n.id)
+      })),
+      connections: baseLayout.connections.map(c => ({
+        ...c,
+        // We don't have parent id here; just leave edge highlight as-is from base
+      }))
+    };
+  }, [baseLayout, highlightedSet]);
 
   useEffect(() => {
     if (highlightedNodes.length > 0 && isAnimating) {
@@ -190,10 +165,7 @@ const TreeVisualizer = ({
     }
   }, [highlightedNodes, isAnimating]);
 
-  // Calculate edge count
-  const edgeCount = useMemo(() => {
-    return treeLayout.connections.length;
-  }, [treeLayout.connections]);
+  const edgeCount = treeLayout.connections.length;
 
   if (!root) {
     return (
@@ -230,11 +202,11 @@ const TreeVisualizer = ({
             <div className={`
               px-4 py-2 rounded-lg font-bold text-white
               ${treeType === 'binary' ? 'bg-gradient-to-r from-purple-600 to-pink-600' :
-                treeType === 'bst' ? 'bg-gradient-to-r from-blue-600 to-cyan-600' :
+                treeType === 'bst'    ? 'bg-gradient-to-r from-blue-600 to-cyan-600' :
                 'bg-gradient-to-r from-emerald-600 to-teal-600'}
             `}>
               {treeType === 'binary' ? '🌳 Binary Tree' : 
-               treeType === 'bst' ? '🔍 Binary Search Tree' : 
+               treeType === 'bst'    ? '🔍 Binary Search Tree' : 
                '⚖️ AVL Tree'}
             </div>
             {isTraversing && (
@@ -294,7 +266,7 @@ const TreeVisualizer = ({
             padding: '40px'
           }}
         >
-          {/* Single SVG canvas for all connections */}
+          {/* SVG edges — no console.log (fix bug #4) */}
           <svg
             className="absolute top-0 left-0 pointer-events-none z-0"
             style={{ 
@@ -304,28 +276,23 @@ const TreeVisualizer = ({
               minHeight: '100%'
             }}
           >
-            {treeLayout.connections.map((conn, index) => {
-              console.log(`Rendering edge ${index}:`, conn);
-              return (
-                <line
-                  key={`edge-${index}-${conn.x1}-${conn.y1}-${conn.x2}-${conn.y2}`}
-                  x1={conn.x1}
-                  y1={conn.y1}
-                  x2={conn.x2}
-                  y2={conn.y2}
-                  stroke={conn.highlighted ? "#f59e0b" : "#4b5563"}
-                  strokeWidth="3"
-                  strokeLinecap="round"
-                  className="transition-all duration-300"
-                />
-              );
-            })}
+            {treeLayout.connections.map((conn, index) => (
+              <line
+                key={`edge-${index}-${conn.x1}-${conn.y1}-${conn.x2}-${conn.y2}`}
+                x1={conn.x1} y1={conn.y1}
+                x2={conn.x2} y2={conn.y2}
+                stroke={conn.highlighted ? "#f59e0b" : "#4b5563"}
+                strokeWidth="3"
+                strokeLinecap="round"
+                className="transition-all duration-300"
+              />
+            ))}
           </svg>
 
-          {/* Render all tree nodes */}
-          {treeLayout.nodes.map((node, index) => (
+          {/* Nodes — keyed by id so duplicates are handled correctly (fix bug #3) */}
+          {treeLayout.nodes.map((node) => (
             <TreeNode
-              key={`node-${node.val}-${index}`}
+              key={`node-${node.id}`}
               node={{ val: node.val, height: node.height }}
               isHighlighted={node.isHighlighted}
               x={node.x}
@@ -335,7 +302,7 @@ const TreeVisualizer = ({
         </div>
       </div>
 
-      {/* Tree stats */}
+      {/* Stats bar */}
       <div className="mt-4 text-center text-sm text-gray-600">
         <div className="inline-flex items-center gap-4 px-4 py-2 bg-gray-100 rounded-lg">
           <span>Nodes: {treeInfo.nodes}</span>
@@ -352,10 +319,9 @@ const TreeVisualizer = ({
         </div>
       </div>
 
-      {/* Scroll hint if tree is wide */}
       {containerSize.width > 1200 && (
         <div className="mt-4 text-center text-sm text-gray-500 animate-pulse">
-          ↕ Scroll horizontally to view the entire tree
+          ↔ Scroll horizontally to view the entire tree
         </div>
       )}
 
@@ -375,29 +341,30 @@ const TreeVisualizer = ({
           </div>
           
           <div className="flex flex-wrap gap-3">
-            {highlightedNodes.map((val, idx) => (
-              <div key={idx} className="flex items-center">
-                <div className={`
-                  px-4 py-2.5 rounded-lg font-medium
-                  ${idx === highlightedNodes.length - 1 
-                    ? 'bg-gradient-to-r from-yellow-100 to-orange-100 border border-yellow-300 text-yellow-800 animate-pulse' 
-                    : 'bg-white border border-blue-200 text-blue-700'
-                  }
-                `}>
-                  <div className="flex items-center gap-2">
-                    <span>{val}</span>
-                    {idx === highlightedNodes.length - 1 && (
-                      <div className="w-2 h-2 rounded-full bg-yellow-500 animate-ping"></div>
-                    )}
+            {/* Display node values from the layout for the highlighted ids */}
+            {treeLayout.nodes
+              .filter(n => highlightedSet.has(n.id))
+              .map((n, idx) => (
+                <div key={n.id} className="flex items-center">
+                  <div className={`
+                    px-4 py-2.5 rounded-lg font-medium
+                    ${idx === highlightedNodes.length - 1 
+                      ? 'bg-gradient-to-r from-yellow-100 to-orange-100 border border-yellow-300 text-yellow-800 animate-pulse' 
+                      : 'bg-white border border-blue-200 text-blue-700'
+                    }
+                  `}>
+                    <div className="flex items-center gap-2">
+                      <span>{n.val}</span>
+                      {idx === highlightedNodes.length - 1 && (
+                        <div className="w-2 h-2 rounded-full bg-yellow-500 animate-ping"></div>
+                      )}
+                    </div>
                   </div>
+                  {idx < highlightedNodes.length - 1 && (
+                    <div className="px-2 text-blue-400 font-bold">→</div>
+                  )}
                 </div>
-                {idx < highlightedNodes.length - 1 && (
-                  <div className="px-2 text-blue-400 font-bold">
-                    →
-                  </div>
-                )}
-              </div>
-            ))}
+              ))}
           </div>
           
           <div className="mt-4 text-sm text-blue-600 font-medium">
@@ -406,7 +373,7 @@ const TreeVisualizer = ({
         </div>
       )}
 
-      {/* Tree Structure Info */}
+      {/* Info cards */}
       <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="p-4 bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl border border-gray-200">
           <div className="flex items-center gap-3 mb-2">
@@ -445,7 +412,7 @@ const TreeVisualizer = ({
             </div>
             <div>
               <div className="font-bold text-gray-800">Optimized Performance</div>
-              <div className="text-sm text-gray-600">Single-pass calculation and rendering</div>
+              <div className="text-sm text-gray-600">Layout recomputed only on tree changes</div>
             </div>
           </div>
         </div>

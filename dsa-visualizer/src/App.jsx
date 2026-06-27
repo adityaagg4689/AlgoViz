@@ -11,7 +11,6 @@ import LandingPage from "./pages/LandingPage";
 export default function App() {
   return (
     <Routes>
-      {/* <Route path="/" element={<Home />} /> */}
       <Route path="/" element={<LandingPage />} />
       <Route path="/array" element={<ArrayPage />} />
       <Route path="/linked-list" element={<LinkedListPage />} />
